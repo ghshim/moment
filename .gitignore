@@ -1,0 +1,6 @@
+*.pyc
+checkpoints
+editing
+generation
+dataset/HumanML3D
+glove
