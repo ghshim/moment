@@ -24,5 +24,6 @@ torchaudio
 torchvision
 tornado
 tqdm
+wandb
 trimesh
 vector-quantize-pytorch==1.6.30

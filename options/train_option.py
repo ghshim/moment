@@ -39,14 +39,15 @@ class TrainLenEstOptions():
         self.parser.add_argument("--gpu_id", type=int, default=-1, help='GPU id')
 
         self.parser.add_argument('--dataset_name', type=str, default='t2m', help='Dataset Name')
-        self.parser.add_argument('--checkpoints_dir', type=str, default='./checkpoints', help='models are saved here')
+        self.parser.add_argument('--checkpoints_dir', type=str, default='./checkpoints/len_estimator', help='models are saved here')
+        self.parser.add_argument("--seed", default=3407, type=int, help="Seed")
 
         self.parser.add_argument('--batch_size', type=int, default=64, help='Batch size')
 
         self.parser.add_argument("--unit_length", type=int, default=4, help="Length of motion")
         self.parser.add_argument("--max_text_len", type=int, default=20, help="Length of motion")
 
-        self.parser.add_argument('--max_epoch', type=int, default=300, help='Training iterations')
+        self.parser.add_argument('--num_epochs', type=int, default=50, help='Training iterations')
 
         self.parser.add_argument('--lr', type=float, default=1e-4, help='Layers of GRU')
 
