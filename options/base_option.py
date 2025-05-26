@@ -21,8 +21,12 @@ class BaseOptions():
         self.parser.add_argument('--n_layers', type=int, default=8, help='Number of attention layers.')
         self.parser.add_argument('--ff_size', type=int, default=1024, help='FF_Size')
         self.parser.add_argument('--dropout', type=float, default=0.2, help='Dropout ratio in transformer')
+        self.parser.add_argument('--pos_dim', type=int, default=15, help='POS dimension')
+        self.parser.add_argument('--word_emb_dim', type=int, default=300, help='GloVe word embedding')
+        self.parser.add_argument('--text_mode', type=int, default=2, help='text module mode')
 
         self.parser.add_argument("--max_motion_length", type=int, default=196, help="Max length of motion")
+        self.parser.add_argument("--max_text_len", type=int, default=20, help="Length of text")
         self.parser.add_argument("--unit_length", type=int, default=4, help="Downscale ratio of VQ")
 
         self.parser.add_argument('--force_mask', action="store_true", help='True: mask out conditions')
