@@ -94,7 +94,7 @@ class MaskTransformer(nn.Module):
             clip_dim=512, 
             cond_drop_prob=0.1,
             clip_version=None, 
-            pos_dim=15,
+            pos_dim=22,
             word_emb_dim=300,
             text_mode=0,
             opt=None, 
@@ -168,7 +168,7 @@ class MaskTransformer(nn.Module):
                 self.word_emb_proj = nn.Linear(self.word_emb_dim, self.clip_dim)
                 self.clip_emb_proj = nn.Linear(self.clip_dim, self.latent_dim)
                 
-                self.text_position_enc = PositionalEncoding(self.latent_dim, self.dropout, max_len=opt.max_text_len + 3)
+                self.text_position_enc = PositionalEncoding(self.latent_dim, self.dropout, max_len=opt.max_text_len+3)
                 self.clip_word_norm = nn.LayerNorm(self.latent_dim)  
 
             else:
@@ -246,7 +246,7 @@ class MaskTransformer(nn.Module):
         return clip_model
 
 
-    def encode_text(self, clip_emb, word_emb=None, pos_one_hot=None):
+    def encode_text(self, clip_emb, word_emb=None, pos=None):
         '''
         clip_embed: clip embedding (bs, 512)
         word_embed: word embedding (bs, max_text_len+2, 300)
@@ -267,13 +267,14 @@ class MaskTransformer(nn.Module):
             K = K.transpose(0, 1)
             V = V.transpose(0, 1)
 
-            attn_output, _ = self.cross_attn(Q, K, V)  # (max_token_len+2, bs, 300)
-            word_attn = attn_output.transpose(0, 1)  # (bs, max_token_len+2, 300)
+            attn_output, _ = self.cross_attn(Q, K, V)     # (max_token_len+2, bs, 300)
+            word_attn = attn_output.transpose(0, 1)       # (bs, max_token_len+2, 300)
 
             word_attn_emb = self.word_emb_proj(word_attn) # (bs, max_token_len+2, 300) -> (bs, max_token_len+2, 512) 
             clip_emb = clip_emb.unsqueeze(1)              # (bs, 512) -> (bs, 1, 512)
             clip_word = torch.cat([word_attn_emb, clip_emb], dim=1)  # (bs, max_token_len+2, 512) + (bs, 1, 512) -> (bs, max_token_len+3, 512)
             clip_word_emb = self.cond_proj(clip_word)     # (bs, max_token_len+3, 512) -> (bs, max_token_len+3, latent dim)
+            clip_word_emb = clip_word_emb.permute(1, 0, 2)
 
             # positional encoding
             clip_word_pos_emb = self.text_position_enc(clip_word_pos_emb)
@@ -281,10 +282,10 @@ class MaskTransformer(nn.Module):
             clip_word_pos_emb = self.clip_word_norm(clip_word_pos_emb)
 
             return clip_word_emb
-
+        
         elif self.text_mode == 2: 
             # POS embedding
-            pos_emb = self.pos_emb_proj(pos_one_hot)  # (batch, seq_len, pos_emb_dim)
+            pos_emb = self.pos_emb_proj(pos)  # (batch, seq_len, pos_emb_dim)
 
             # Prepare Query, Key, Value
             Q = word_emb  # (bs, max_token_len+2, 300)
@@ -304,6 +305,7 @@ class MaskTransformer(nn.Module):
             clip_emb = clip_emb.unsqueeze(1)                            # (bs, 512) -> (bs, 1, 512)
             clip_word_pos = torch.cat([word_attn_emb, clip_emb], dim=1) # (bs, max_token_len+2, 512)  + (bs, 1, 512) = (bs, max_token_len+3, 512)
             clip_word_pos_emb = self.cond_proj(clip_word_pos)           # (bs, max_token_len+2, 512) -> (bs, max_token_len+2, latent_dim)
+            clip_word_pos_emb = clip_word_pos_emb.permute(1, 0, 2)
 
             # positional encoding
             clip_word_pos_emb = self.text_position_enc(clip_word_pos_emb)
@@ -313,14 +315,25 @@ class MaskTransformer(nn.Module):
             return clip_word_pos_emb
 
     def mask_cond(self, cond, force_mask=False):
-        bs, d =  cond.shape
-        if force_mask:
-            return torch.zeros_like(cond)
-        elif self.training and self.cond_drop_prob > 0.:
-            mask = torch.bernoulli(torch.ones(bs, device=cond.device) * self.cond_drop_prob).view(bs, 1)
-            return cond * (1. - mask)
+        if self.cond_mode == 'text':
+            bs, seqlen, d = cond.shape
+            if force_mask:
+                return torch.zeros_like(cond)
+            elif self.training and self.cond_drop_prob > 0.:
+                mask = torch.bernoulli(torch.ones(bs, device=cond.device) * self.cond_drop_prob).view(bs, 1, 1)
+                return cond * (1. - mask)
+            else:
+                return cond
+
         else:
-            return cond
+            bs, d =  cond.shape
+            if force_mask:
+                return torch.zeros_like(cond)
+            elif self.training and self.cond_drop_prob > 0.:
+                mask = torch.bernoulli(torch.ones(bs, device=cond.device) * self.cond_drop_prob).view(bs, 1)
+                return cond * (1. - mask)
+            else:
+                return cond
 
     def trans_forward(self, motion_ids, cond, padding_mask, force_mask=False):
         '''
@@ -341,23 +354,28 @@ class MaskTransformer(nn.Module):
         x = self.input_process(x)
         x = self.position_enc(x)
 
-        if self.cond_mode != 'text':
-            cond = cond.permute(1, 0, 2)
-            xseq = torch.cat([cond, x], dim=0) #(max_token_len+3+seq_len, b, latent_dim)
+        if self.cond_mode == 'text':
+            # cond: (seqlen_cond, b, d)
+            xseq = torch.cat([cond, x], dim=0)  # (seqlen_cond + seqlen_x, b, d)
+            cond_padding = torch.zeros(padding_mask.shape[0], cond.shape[0], device=padding_mask.device, dtype=padding_mask.dtype)
+            padding_mask = torch.cat([cond_padding, padding_mask], dim=1)  # (b, seqlen_cond + seqlen_x)
         else:
-            cond = self.cond_emb(cond).unsqueeze(0) # (1, b, latent_dim)
-            xseq = torch.cat([cond, x], dim=0)      # (seq_len+1, b, latent_dim)
+            cond = self.cond_emb(cond).unsqueeze(0)  # (1, b, d)
+            xseq = torch.cat([cond, x], dim=0)  # (1 + seqlen_x, b, d)
+            cond_padding = torch.zeros_like(padding_mask[:, 0:1])  # (b, 1)
+            padding_mask = torch.cat([cond_padding, padding_mask], dim=1)  # (b, 1 + seqlen_x)
 
-        padding_mask = torch.cat([torch.zeros_like(padding_mask[:, 0:1]), padding_mask], dim=1) #(b, seqlen+1)
+
+        # padding_mask = torch.cat([torch.zeros_like(padding_mask[:, 0:1]), padding_mask], dim=1) #(b, seqlen+1)
         # print(xseq.shape, padding_mask.shape)
 
         # print(padding_mask.shape, xseq.shape)
 
-        output = self.seqTransEncoder(xseq, src_key_padding_mask=padding_mask)[1:] #(seqlen, b, e)
+        output = self.seqTransEncoder(xseq, src_key_padding_mask=padding_mask)[cond.shape[0]:] #(seqlen, b, e)
         logits = self.output_process(output) #(seqlen, b, e) -> (b, ntoken, seqlen)
         return logits
 
-    def forward(self, ids, y, m_lens, word_emb=None, pos_one_hot=None):
+    def forward(self, ids, y, m_lens, word_emb=None, pos=None):
         '''
         :param ids: (b, n)
         :param y: raw text for cond_mode=text, (b, ) for cond_mode=action
@@ -376,7 +394,7 @@ class MaskTransformer(nn.Module):
 
         force_mask = False
         if self.cond_mode == 'text':
-            cond_vector = self.encode_text(y, word_emb=word_emb, pos_one_hot=pos_one_hot)
+            cond_vector = self.encode_text(y, word_emb=word_emb, pos=pos)
         elif self.cond_mode == 'action':
             cond_vector = self.enc_action(y).to(device).float()
         elif self.cond_mode == 'uncond':
@@ -416,7 +434,7 @@ class MaskTransformer(nn.Module):
         # mask_mid = mask
 
         x_ids = torch.where(mask_mid, self.mask_id, x_ids)
-
+        
         logits = self.trans_forward(x_ids, cond_vector, ~non_pad_mask, force_mask)
         ce_loss, pred_id, acc = cal_performance(logits, labels, ignore_index=self.mask_id)
 
@@ -449,6 +467,9 @@ class MaskTransformer(nn.Module):
                  m_lens,
                  timesteps: int,
                  cond_scale: int,
+                 sen_emb=None,
+                 word_emb=None,
+                 pos=None,
                  temperature=1,
                  topk_filter_thres=0.9,
                  gsample=False,
@@ -461,17 +482,24 @@ class MaskTransformer(nn.Module):
         seq_len = max(m_lens)
         batch_size = len(m_lens)
 
+        # Prepare cond vector
         if self.cond_mode == 'text':
-            with torch.no_grad():
-                cond_vector = self.encode_text(conds)
+            cond_vector = self.encode_text(sen_emb, word_emb=word_emb, pos=pos)  # (cond_len, b, d)
+            cond_seq_len = cond_vector.shape[0]
         elif self.cond_mode == 'action':
             cond_vector = self.enc_action(conds).to(device)
+            cond_seq_len = 1
         elif self.cond_mode == 'uncond':
             cond_vector = torch.zeros(batch_size, self.latent_dim).float().to(device)
+            cond_seq_len = 1
         else:
             raise NotImplementedError("Unsupported condition mode!!!")
 
-        padding_mask = ~lengths_to_mask(m_lens, seq_len)
+        # Prepare padding mask: cond part is unmasked (False), motion part padded
+        padding_mask_motion = ~lengths_to_mask(m_lens, seq_len)  # (b, seq_len)
+        cond_padding = torch.zeros(batch_size, cond_seq_len, device=device, dtype=padding_mask_motion.dtype)
+        padding_mask = torch.cat([cond_padding, padding_mask_motion], dim=1)  # (b, total_len)
+
         # print(padding_mask.shape, )
 
         # Start from all tokens being masked
@@ -490,22 +518,28 @@ class MaskTransformer(nn.Module):
             num_token_masked = torch.round(rand_mask_prob * m_lens).clamp(min=1)  # (b, )
 
             # select num_token_masked tokens with lowest scores to be masked
-            sorted_indices = scores.argsort(
+            sorted_indices = scores[:,cond_seq_len:].argsort(
                 dim=1)  # (b, k), sorted_indices[i, j] = the index of j-th lowest element in scores on dim=1
             ranks = sorted_indices.argsort(dim=1)  # (b, k), rank[i, j] = the rank (0: lowest) of scores[i, j] on dim=1
-            is_mask = (ranks < num_token_masked.unsqueeze(-1))
+            is_mask_motion = (ranks < num_token_masked.unsqueeze(-1))  # (b, seq_len)
+
+            # Expand to full length
+            is_mask = torch.zeros_like(ids, dtype=torch.bool)
+            is_mask[:, cond_seq_len:] = is_mask_motion  # only mask motion part
+
             ids = torch.where(is_mask, self.mask_id, ids)
 
             '''
             Preparing input
             '''
+            
             # (b, num_token, seqlen)
             logits = self.forward_with_cond_scale(ids, cond_vector=cond_vector,
                                                   padding_mask=padding_mask,
                                                   cond_scale=cond_scale,
                                                   force_mask=force_mask)
 
-            logits = logits.permute(0, 2, 1)  # (b, seqlen, ntoken)
+            logits = logits.permute(0, 2, 1)[:, cond_seq_len:, :]  # (b, seqlen, ntoken)
             # print(logits.shape, self.opt.num_tokens)
             # clean low prob token
             filtered_logits = top_k(logits, topk_filter_thres, dim=-1)
@@ -532,22 +566,27 @@ class MaskTransformer(nn.Module):
 
             # print(pred_ids.max(), pred_ids.min())
             # if pred_ids.
-            ids = torch.where(is_mask, pred_ids, ids)
+            # ids = torch.where(is_mask, pred_ids, ids)
+            ids[:, cond_seq_len:] = torch.where(is_mask[:, cond_seq_len:], pred_ids, ids[:, cond_seq_len:])
+
 
             '''
             Updating scores
             '''
-            probs_without_temperature = logits.softmax(dim=-1)  # (b, seqlen, ntoken)
-            scores = probs_without_temperature.gather(2, pred_ids.unsqueeze(dim=-1))  # (b, seqlen, 1)
-            scores = scores.squeeze(-1)  # (b, seqlen)
+            # Update scores (only motion part)
+            probs_without_temp = logits.softmax(dim=-1)  # (b, motion_len, ntoken)
+            selected_scores = probs_without_temp.gather(2, pred_ids.unsqueeze(-1)).squeeze(-1)  # (b, motion_len)
 
-            # We do not want to re-mask the previously kept tokens, or pad tokens
-            scores = scores.masked_fill(~is_mask, 1e5)
+            # Fill into scores[:, cond_seq_len:]
+            scores[:, cond_seq_len:] = selected_scores
+
+            # Prevent re-masking: only on motion part
+            scores[:, cond_seq_len:] = scores[:, cond_seq_len:].masked_fill(~is_mask[:, cond_seq_len:], 1e5)
 
         ids = torch.where(padding_mask, -1, ids)
-        # print("Final", ids.max(), ids.min())
-        return ids
-
+    
+        # return ids
+        return ids[:, cond_seq_len:]
 
     @torch.no_grad()
     @eval_decorator
@@ -728,9 +767,26 @@ class MaskTransformer(nn.Module):
 
 
 class ResidualTransformer(nn.Module):
-    def __init__(self, code_dim, cond_mode, latent_dim=256, ff_size=1024, num_layers=8, cond_drop_prob=0.1,
-                 num_heads=4, dropout=0.1, clip_dim=512, shared_codebook=False, share_weight=False,
-                 clip_version=None, opt=None, **kargs):
+    def __init__(
+            self, 
+            code_dim, 
+            cond_mode, 
+            latent_dim=256, 
+            ff_size=1024,
+            num_layers=8, 
+            cond_drop_prob=0.1,
+            num_heads=4, 
+            dropout=0.1, 
+            clip_dim=512, 
+            shared_codebook=False, 
+            share_weight=False,
+            clip_version=None, 
+            pos_dim=22,
+            word_emb_dim=300,
+            text_mode=0,
+            opt=None,
+            **kargs
+        ):
         super(ResidualTransformer, self).__init__()
         print(f'latent_dim: {latent_dim}, ff_size: {ff_size}, nlayers: {num_layers}, nheads: {num_heads}, dropout: {dropout}')
 
@@ -740,6 +796,9 @@ class ResidualTransformer(nn.Module):
         self.latent_dim = latent_dim
         self.clip_dim = clip_dim
         self.dropout = dropout
+        self.pos_dim = pos_dim
+        self.word_emb_dim = word_emb_dim
+        self.text_mode = text_mode
         self.opt = opt
 
         self.cond_mode = cond_mode
@@ -771,7 +830,44 @@ class ResidualTransformer(nn.Module):
         self.quant_emb = nn.Linear(self.opt.num_quantizers, self.latent_dim)
         # if self.cond_mode != 'no_cond':
         if self.cond_mode == 'text':
-            self.cond_emb = nn.Linear(self.clip_dim, self.latent_dim)
+            # self.cond_emb = nn.Linear(self.clip_dim, self.latent_dim)
+            if text_mode == 0:
+                self.clip_emb_proj = nn.Linear(self.clip_dim, self.latent_dim)
+
+            elif text_mode == 1:
+                self.cond_proj = nn.Linear(self.clip_dim, self.latent_dim)
+
+                # Multihead attention
+                self.cross_attn = nn.MultiheadAttention(embed_dim=word_emb_dim, num_heads=num_heads, dropout=dropout)
+                self.word_emb_proj = nn.Linear(self.word_emb_dim, self.clip_dim)
+                self.clip_emb_proj = nn.Linear(self.clip_dim, self.latent_dim)
+                self.text_position_enc = PositionalEncoding(self.latent_dim, self.dropout, max_len=opt.max_text_len + 3)
+                self.clip_word_norm = nn.LayerNorm(self.latent_dim)  
+
+            elif text_mode == 2:
+                self.cond_proj = nn.Linear(self.clip_dim, self.latent_dim)
+
+                # POS embedding projection
+                self.pos_emb_dim = 16
+                self.pos_emb_proj = nn.Embedding(pos_dim, self.pos_emb_dim)
+
+                # Projection layers for cross-attention
+                # self.q_proj = nn.Linear(word_emb_dim, latent_dim)
+                self.k_proj = nn.Linear(word_emb_dim + self.pos_emb_dim, word_emb_dim)
+                self.v_proj = nn.Linear(word_emb_dim + self.pos_emb_dim, word_emb_dim)
+
+                # Multihead attention
+                self.cross_attn = nn.MultiheadAttention(embed_dim=word_emb_dim, num_heads=num_heads, dropout=dropout)
+
+                self.word_emb_proj = nn.Linear(self.word_emb_dim, self.clip_dim)
+                self.clip_emb_proj = nn.Linear(self.clip_dim, self.latent_dim)
+                
+                self.text_position_enc = PositionalEncoding(self.latent_dim, self.dropout, max_len=opt.max_text_len+3)
+                self.clip_word_norm = nn.LayerNorm(self.latent_dim)  
+
+            else:
+                NotImplementedError(f"Undefined text mode: {text_mode}")
+
         elif self.cond_mode == 'action':
             self.cond_emb = nn.Linear(self.num_actions, self.latent_dim)
         else:
@@ -818,22 +914,31 @@ class ResidualTransformer(nn.Module):
         self.shared_codebook = shared_codebook
         self.share_weight = share_weight
 
-        if self.cond_mode == 'text':
-            print('Loading CLIP...')
-            self.clip_version = clip_version
-            self.clip_model = self.load_and_freeze_clip(clip_version)
+        # if self.cond_mode == 'text':
+        #     print('Loading CLIP...')
+        #     self.clip_version = clip_version
+        #     self.clip_model = self.load_and_freeze_clip(clip_version)
 
-    # def
-
+   
     def mask_cond(self, cond, force_mask=False):
-        bs, d =  cond.shape
-        if force_mask:
-            return torch.zeros_like(cond)
-        elif self.training and self.cond_drop_prob > 0.:
-            mask = torch.bernoulli(torch.ones(bs, device=cond.device) * self.cond_drop_prob).view(bs, 1)
-            return cond * (1. - mask)
+        if self.cond_mode == 'text':
+            bs, seqlen, d = cond.shape
+            if force_mask:
+                return torch.zeros_like(cond)
+            elif self.training and self.cond_drop_prob > 0.:
+                mask = torch.bernoulli(torch.ones(bs, device=cond.device) * self.cond_drop_prob).view(bs, 1, 1)
+                return cond * (1. - mask)
+            else:
+                return cond
         else:
-            return cond
+            bs, d =  cond.shape
+            if force_mask:
+                return torch.zeros_like(cond)
+            elif self.training and self.cond_drop_prob > 0.:
+                mask = torch.bernoulli(torch.ones(bs, device=cond.device) * self.cond_drop_prob).view(bs, 1)
+                return cond * (1. - mask)
+            else:
+                return cond
 
     def __init_weights(self, module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
@@ -863,11 +968,73 @@ class ResidualTransformer(nn.Module):
 
         return clip_model
 
-    def encode_text(self, raw_text):
-        device = next(self.parameters()).device
-        text = clip.tokenize(raw_text, truncate=True).to(device)
-        feat_clip_text = self.clip_model.encode_text(text).float()
-        return feat_clip_text
+    def encode_text(self, clip_emb, word_emb=None, pos=None):
+        '''
+        clip_embed: clip embedding (bs, 512)
+        word_embed: word embedding (bs, max_text_len+2, 300)
+        pos_one_hot: POS one hot vector (bs, max_text_len+2, 15)
+        '''
+        if self.text_mode == 0:
+            return clip_emb
+        
+        elif self.text_mode == 1:
+            # No pos_emb, pure word_emb cross-attention
+            # Prepare Query, Key, Value
+            Q = word_emb  # (bs, max_token_len+2, 300)
+            K = word_emb
+            V = word_emb
+
+            # Transpose for attention
+            Q = Q.transpose(0, 1)
+            K = K.transpose(0, 1)
+            V = V.transpose(0, 1)
+
+            attn_output, _ = self.cross_attn(Q, K, V)     # (max_token_len+2, bs, 300)
+            word_attn = attn_output.transpose(0, 1)       # (bs, max_token_len+2, 300)
+
+            word_attn_emb = self.word_emb_proj(word_attn) # (bs, max_token_len+2, 300) -> (bs, max_token_len+2, 512) 
+            clip_emb = clip_emb.unsqueeze(1)              # (bs, 512) -> (bs, 1, 512)
+            clip_word = torch.cat([word_attn_emb, clip_emb], dim=1)  # (bs, max_token_len+2, 512) + (bs, 1, 512) -> (bs, max_token_len+3, 512)
+            clip_word_emb = self.cond_proj(clip_word)     # (bs, max_token_len+3, 512) -> (bs, max_token_len+3, latent dim)
+            clip_word_emb = clip_word_emb.permute(1, 0, 2)
+
+            # positional encoding
+            clip_word_pos_emb = self.text_position_enc(clip_word_pos_emb)
+            # layer normalization
+            clip_word_pos_emb = self.clip_word_norm(clip_word_pos_emb)
+
+            return clip_word_emb
+        
+        elif self.text_mode == 2: 
+            # POS embedding
+            pos_emb = self.pos_emb_proj(pos)  # (batch, seq_len, pos_emb_dim)
+
+            # Prepare Query, Key, Value
+            Q = word_emb  # (bs, max_token_len+2, 300)
+            KV_input = torch.cat([word_emb, pos_emb], dim=-1)  # (bs, max_token_len+2, 300 + pos_emb_dim)
+            K = self.k_proj(KV_input)
+            V = self.v_proj(KV_input)
+
+            # Transpose for attention
+            Q = Q.transpose(0, 1)
+            K = K.transpose(0, 1)
+            V = V.transpose(0, 1)
+
+            attn_output, _ = self.cross_attn(Q, K, V)     # (max_token_len+2, bs, 300)
+            word_pos_attn = attn_output.transpose(0, 1)   # (bs, max_token_len+2, 300)
+            
+            word_attn_emb = self.word_emb_proj(word_pos_attn)           # (bs, max_token_len+2, 300) -> (bs, max_token_len+2, 512) 
+            clip_emb = clip_emb.unsqueeze(1)                            # (bs, 512) -> (bs, 1, 512)
+            clip_word_pos = torch.cat([word_attn_emb, clip_emb], dim=1) # (bs, max_token_len+2, 512)  + (bs, 1, 512) = (bs, max_token_len+3, 512)
+            clip_word_pos_emb = self.cond_proj(clip_word_pos)           # (bs, max_token_len+2, 512) -> (bs, max_token_len+2, latent_dim)
+            clip_word_pos_emb = clip_word_pos_emb.permute(1, 0, 2)
+
+            # positional encoding
+            clip_word_pos_emb = self.text_position_enc(clip_word_pos_emb)
+            # layer normalziation
+            clip_word_pos_emb = self.clip_word_norm(clip_word_pos_emb)
+
+            return clip_word_pos_emb
 
 
     def q_schedule(self, bs, low, high):
@@ -920,13 +1087,19 @@ class ResidualTransformer(nn.Module):
         q_onehot = self.encode_quant(qids).float().to(x.device)
 
         q_emb = self.quant_emb(q_onehot).unsqueeze(0)  # (1, b, latent_dim)
-        cond = self.cond_emb(cond).unsqueeze(0)  # (1, b, latent_dim)
-
+        
         x = self.position_enc(x)
-        xseq = torch.cat([cond, q_emb, x], dim=0)  # (seqlen+2, b, latent_dim)
 
-        padding_mask = torch.cat([torch.zeros_like(padding_mask[:, 0:2]), padding_mask], dim=1)  # (b, seqlen+2)
-        output = self.seqTransEncoder(xseq, src_key_padding_mask=padding_mask)[2:]  # (seqlen, b, e)
+        if self.cond_mode == 'text':
+            xseq = torch.cat([cond, q_emb, x], dim=0)  # (seqlen_cond + 1 + seqlen_x, b, d)
+            cond_padding = torch.zeros(padding_mask.shape[0], cond.shape[0], device=padding_mask.device, dtype=padding_mask.dtype)
+            q_emb_padding = torch.zeros(padding_mask.shape[0], 1, device=padding_mask.device, dtype=padding_mask.dtype)
+            padding_mask = torch.cat([cond_padding, q_emb_padding, padding_mask], dim=1)  # (b, seqlen_cond + seqlen_x + 1)
+        else:
+            cond = self.cond_emb(cond).unsqueeze(0)  # (1, b, latent_dim)
+            xseq = torch.cat([cond, q_emb, x], dim=0)  # (seqlen+2, b, latent_dim)
+            padding_mask = torch.cat([torch.zeros_like(padding_mask[:, 0:2]), padding_mask], dim=1)  # (b, seqlen+2)
+        output = self.seqTransEncoder(xseq, src_key_padding_mask=padding_mask)[cond.shape[0]+1:]  # (seqlen, b, e)
         logits = self.output_process(output)
         return logits
 
@@ -956,7 +1129,7 @@ class ResidualTransformer(nn.Module):
         scaled_logits = aux_logits + (logits - aux_logits) * cond_scale
         return scaled_logits
 
-    def forward(self, all_indices, y, m_lens):
+    def forward(self, all_indices, y, m_lens, word_emb=None, pos=None):
         '''
         :param all_indices: (b, n, q)
         :param y: raw text for cond_mode=text, (b, ) for cond_mode=action
@@ -991,8 +1164,7 @@ class ResidualTransformer(nn.Module):
 
         force_mask = False
         if self.cond_mode == 'text':
-            with torch.no_grad():
-                cond_vector = self.encode_text(y)
+            cond_vector = self.encode_text(y, word_emb=word_emb, pos=pos)
         elif self.cond_mode == 'action':
             cond_vector = self.enc_action(y).to(device).float()
         elif self.cond_mode == 'uncond':
@@ -1013,6 +1185,9 @@ class ResidualTransformer(nn.Module):
                  motion_ids,
                  conds,
                  m_lens,
+                 sen_emb=None,
+                 word_emb=None,
+                 pos=None,
                  temperature=1,
                  topk_filter_thres=0.9,
                  cond_scale=2,
@@ -1028,8 +1203,8 @@ class ResidualTransformer(nn.Module):
         batch_size = len(conds)
 
         if self.cond_mode == 'text':
-            with torch.no_grad():
-                cond_vector = self.encode_text(conds)
+            cond_vector = self.encode_text(sen_emb, word_emb=word_emb, pos=pos)  # (cond_len, b, d)
+            cond_seq_len = cond_vector.shape[0]
         elif self.cond_mode == 'action':
             cond_vector = self.enc_action(conds).to(device)
         elif self.cond_mode == 'uncond':
@@ -1042,7 +1217,10 @@ class ResidualTransformer(nn.Module):
         # history_sum = token_embed.gather(1, gathered_ids)
 
         # print(pa, seq_len)
-        padding_mask = ~lengths_to_mask(m_lens, seq_len)
+        padding_mask = ~lengths_to_mask(m_lens, seq_len)  # (b, seq_len)
+        # cond_padding = torch.zeros(batch_size, cond_seq_len, device=device, dtype=padding_mask_motion.dtype)
+        # padding_mask = torch.cat([cond_padding, padding_mask_motion], dim=1)  # (b, total_len)
+        
         # print(padding_mask.shape, motion_ids.shape)
         motion_ids = torch.where(padding_mask, self.pad_id, motion_ids)
         all_indices = [motion_ids]

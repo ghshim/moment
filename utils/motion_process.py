@@ -194,12 +194,14 @@ def process_file(positions, feet_thre):
     across1 = root_pos_init[r_hip] - root_pos_init[l_hip]
     across2 = root_pos_init[sdr_r] - root_pos_init[sdr_l]
     across = across1 + across2
-    across = across / np.sqrt((across ** 2).sum(axis=-1))[..., np.newaxis]
+    across = across / (np.abs(across).sum(axis=-1) + 1e-4)
+    # across = across / np.sqrt((across ** 2).sum(axis=-1))[..., np.newaxis]
 
     # forward (3,), rotate around y-axis
     forward_init = np.cross(np.array([[0, 1, 0]]), across, axis=-1)
     # forward (3,)
-    forward_init = forward_init / np.sqrt((forward_init ** 2).sum(axis=-1))[..., np.newaxis]
+    forward_init = forward_init / (np.abs(forward_init).sum(axis=-1) + 1e-4)
+    # forward_init = forward_init / np.sqrt((forward_init ** 2).sum(axis=-1))[..., np.newaxis]
 
     #     print(forward_init)
 

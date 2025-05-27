@@ -9,7 +9,7 @@ import codecs as cs
 
 
 def collate_fn(batch):
-    batch.sort(key=lambda x: x[3], reverse=True)
+    batch.sort(key=lambda x: x[-1], reverse=True)
     return default_collate(batch)
 
 class MotionDataset(data.Dataset):
@@ -235,6 +235,7 @@ class NewText2MotionDataset(data.Dataset):
         self.pointer = 0
         self.max_motion_length = opt.max_motion_length
         min_motion_len = 40 if self.opt.dataset_name =='t2m' else 24
+        self.clip_emb_dir = pjoin(self.opt.data_root, 'clip')
 
         data_dict = {}
         id_list = []
@@ -298,7 +299,7 @@ class NewText2MotionDataset(data.Dataset):
                     new_name_list.append(name)
                     length_list.append(len(motion))
             except Exception as e:
-                # print(e)
+                print(e)
                 pass
 
         name_list, length_list = zip(*sorted(zip(new_name_list, length_list), key=lambda x: x[1]))
@@ -340,13 +341,18 @@ class NewText2MotionDataset(data.Dataset):
             tokens = tokens[:self.opt.max_text_len]
             tokens = ['sos/OTHER'] + tokens + ['eos/OTHER']
             sent_len = len(tokens)
+
+        pos_indices = []
         pos_one_hots = []
         word_embeddings = []
         for token in tokens:
             word_emb, pos_oh = self.w_vectorizer[token]
+            pos_index = np.argmax(pos_oh)  # one-hot → int index
+            pos_indices.append(pos_index)
             pos_one_hots.append(pos_oh[None, :])
             word_embeddings.append(word_emb[None, :])
         pos_one_hots = np.concatenate(pos_one_hots, axis=0)
+        pos_indices = np.array(pos_indices) 
         word_embeddings = np.concatenate(word_embeddings, axis=0)
 
         if self.opt.unit_length < 10:
@@ -370,7 +376,7 @@ class NewText2MotionDataset(data.Dataset):
                                      ], axis=0)
         # print(word_embeddings.shape, motion.shape)
         # print(tokens)
-        return word_embeddings, pos_one_hots, embedding, caption, sent_len, motion, m_length, '_'.join(tokens)
+        return word_embeddings, pos_one_hots, pos_indices, embedding, caption, sent_len, motion, m_length, '_'.join(tokens)
 
 
 class Text2MotionDataset(data.Dataset):
@@ -380,6 +386,7 @@ class Text2MotionDataset(data.Dataset):
         self.pointer = 0
         self.max_motion_length = opt.max_motion_length
         min_motion_len = 40 if self.opt.dataset_name =='t2m' else 24
+        self.clip_emb_dir = pjoin(self.opt.data_root, 'clip')
 
         data_dict = {}
         id_list = []
@@ -443,7 +450,7 @@ class Text2MotionDataset(data.Dataset):
                     new_name_list.append(name)
                     length_list.append(len(motion))
             except Exception as e:
-                # print(e)
+                print(e)
                 pass
 
         # name_list, length_list = zip(*sorted(zip(new_name_list, length_list), key=lambda x: x[1]))
@@ -505,6 +512,7 @@ class Text2MotionLenDataset(data.Dataset):
         self.pointer = 0
         self.max_motion_length = opt.max_motion_length
         min_motion_len = 40 if self.opt.dataset_name =='t2m' else 24
+        self.clip_emb_dir = pjoin(self.opt.data_root, 'clip')
 
         data_dict = {}
         id_list = []

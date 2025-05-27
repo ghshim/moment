@@ -9,7 +9,7 @@ from torch.utils.tensorboard import SummaryWriter
 from collections import OrderedDict
 from utils.utils import *
 from os.path import join as pjoin
-from utils.eval_t2m import new_evaluation_mask_transformer, new_evaluation_res_transformer
+from utils.eval_t2m import new_evaluation_mask_transformer, evaluation_res_transformer
 from models.mask_transformer.tools import *
 
 
@@ -211,7 +211,6 @@ class MaskTransformerTrainer:
             )
 
 
-
 class ResidualTransformerTrainer:
     def __init__(self, args, res_transformer, vq_model, cond_mode=None):
         self.opt = args
@@ -311,8 +310,8 @@ class ResidualTransformerTrainer:
 
         if self.opt.is_continue:
             model_dir = pjoin(self.opt.model_dir, 'latest.tar')  # TODO
-            start_epoch, it = self.resume(model_dir)
-            print("Load model epoch:%d iterations:%d"%(start_epoch, it))
+            epoch, it = self.resume(model_dir)
+            print("Load model epoch:%d iterations:%d"%(epoch, it))
 
         start_time = time.time()
         total_iters = self.opt.max_epoch * len(train_loader)
@@ -320,8 +319,8 @@ class ResidualTransformerTrainer:
         print('Iters Per Epoch, Training: %04d, Validation: %03d' % (len(train_loader), len(val_loader)))
         logs = defaultdict(def_value, OrderedDict())
 
-        best_fid, best_div, best_top1, best_top2, best_top3, best_matching, writer = new_evaluation_res_transformer(
-            self.opt.save_root, eval_val_loader, self.res_transformer, self.vq_model, self.logger, start_epoch,
+        best_fid, best_div, best_top1, best_top2, best_top3, best_matching, writer = evaluation_res_transformer(
+            self.opt.save_root, eval_val_loader, self.res_transformer, self.vq_model, self.logger, epoch,
             best_fid=100, best_div=100,
             best_top1=0, best_top2=0, best_top3=0,
             best_matching=100, eval_wrapper=eval_wrapper,
@@ -399,7 +398,7 @@ class ResidualTransformerTrainer:
                 # self.save(pjoin(self.opt.model_dir, 'net_best_loss.tar'), epoch, it)
                 best_acc = np.mean(val_acc)
 
-            best_fid, best_div, best_top1, best_top2, best_top3, best_matching, writer = new_evaluation_res_transformer(
+            best_fid, best_div, best_top1, best_top2, best_top3, best_matching, writer = evaluation_res_transformer(
                 self.opt.save_root, eval_val_loader, self.res_transformer, self.vq_model, self.logger, epoch, best_fid=best_fid,
                 best_div=best_div, best_top1=best_top1, best_top2=best_top2, best_top3=best_top3,
                 best_matching=best_matching, eval_wrapper=eval_wrapper,
