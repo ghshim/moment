@@ -94,7 +94,7 @@ class MaskTransformer(nn.Module):
             clip_dim=512, 
             cond_drop_prob=0.1,
             clip_version=None, 
-            pos_dim=22,
+            pos_emb_dim=300,
             word_emb_dim=300,
             text_mode=0,
             opt=None, 
@@ -106,7 +106,7 @@ class MaskTransformer(nn.Module):
         self.latent_dim = latent_dim
         self.clip_dim = clip_dim
         self.dropout = dropout
-        self.pos_dim = pos_dim
+        self.pos_emb_dim = pos_emb_dim
         self.word_emb_dim = word_emb_dim
         self.text_mode = text_mode
         self.opt = opt
@@ -154,13 +154,12 @@ class MaskTransformer(nn.Module):
                 self.cond_proj = nn.Linear(self.clip_dim, self.latent_dim)
 
                 # POS embedding projection
-                self.pos_emb_dim = 16
-                self.pos_emb_proj = nn.Embedding(pos_dim, self.pos_emb_dim)
+                self.pos_emb_proj = nn.Embedding(1, self.pos_emb_dim)
 
                 # Projection layers for cross-attention
                 # self.q_proj = nn.Linear(word_emb_dim, latent_dim)
-                self.k_proj = nn.Linear(word_emb_dim + self.pos_emb_dim, word_emb_dim)
-                self.v_proj = nn.Linear(word_emb_dim + self.pos_emb_dim, word_emb_dim)
+                # self.k_proj = nn.Linear(word_emb_dim + self.pos_emb_dim, word_emb_dim)
+                # self.v_proj = nn.Linear(word_emb_dim + self.pos_emb_dim, word_emb_dim)
 
                 # Multihead attention
                 self.cross_attn = nn.MultiheadAttention(embed_dim=word_emb_dim, num_heads=num_heads, dropout=dropout)
@@ -258,9 +257,8 @@ class MaskTransformer(nn.Module):
         elif self.text_mode == 1:
             # Prepare Query, Key, Value
             Q = word_emb  # (bs, max_token_len+2, 300)
-            KV_input = torch.cat([word_emb, pos_emb], dim=-1)  # (bs, max_token_len+2, 300 + pos_emb_dim)
-            K = self.k_proj(KV_input)
-            V = self.v_proj(KV_input)
+            K = word_emb
+            V = word_emb
 
             # Transpose for attention
             Q = Q.transpose(0, 1)
@@ -285,13 +283,15 @@ class MaskTransformer(nn.Module):
         
         elif self.text_mode == 2: 
             # POS embedding
-            pos_emb = self.pos_emb_proj(pos)  # (batch, seq_len, pos_emb_dim)
+            pos_emb = self.pos_emb_proj(pos)  # (batch, max_token_len+2, 1) -> (batch, max_token_len+2, pos_emb_dim)
 
             # Prepare Query, Key, Value
             Q = word_emb  # (bs, max_token_len+2, 300)
-            KV_input = torch.cat([word_emb, pos_emb], dim=-1)  # (bs, max_token_len+2, 300 + pos_emb_dim)
-            K = self.k_proj(KV_input)
-            V = self.v_proj(KV_input)
+            # KV_input = torch.cat([word_emb, pos_emb], dim=-1)  # (bs, max_token_len+2, 300 + pos_emb_dim)
+            # K = self.k_proj(KV_input)
+            # V = self.v_proj(KV_input)
+            K = pos_emb
+            V = pos_emb
 
             # Transpose for attention
             Q = Q.transpose(0, 1)

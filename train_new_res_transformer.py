@@ -30,7 +30,7 @@ def plot_t2m(data, save_dir, captions, m_lengths):
     for i, (caption, joint_data) in enumerate(zip(captions, data)):
         joint_data = joint_data[:m_lengths[i]]
         joint = recover_from_ric(torch.from_numpy(joint_data).float(), opt.joints_num).numpy()
-        save_path = pjoin(save_dir, '%02d.mp4'%i)
+        save_path = pjoin(save_dir, '%02d.gif'%i)
         # print(joint.shape)
         plot_3d_motion(save_path, kinematic_chain, joint, title=caption, fps=fps, radius=radius)
 
@@ -58,6 +58,10 @@ def load_vq_model():
     return vq_model, vq_opt
 
 if __name__ == '__main__':
+    '''
+    Usage:
+        python train_new_res_transformer.py --name r-trans-v2  --gpu_id 3 --dataset_name t2m --batch_size 64 --vq_name rvq_nq6_dc512_nc512_noshare_qdp0.2 --cond_drop_prob 0.2 --share_weight --text_mode 2
+    '''
     parser = TrainT2MOptions()
     opt = parser.parse()
     fixseed(opt.seed)
@@ -124,23 +128,10 @@ if __name__ == '__main__':
                                           # codebook=vq_model.quantizer.codebooks[0] if opt.fix_token_emb else None,
                                           share_weight=opt.share_weight,
                                           clip_version=clip_version,
+                                          pos_dim=opt.pos_dim,
+                                          word_emb_dim=opt.word_emb_dim,
                                           text_mode=opt.text_mode,
                                           opt=opt)
-    # else:
-    #     res_transformer = ResidualTransformer(code_dim=vq_opt.code_dim,
-    #                                           cond_mode='text',
-    #                                           latent_dim=opt.latent_dim,
-    #                                           ff_size=opt.ff_size,
-    #                                           num_layers=opt.n_layers,
-    #                                           num_heads=opt.n_heads,
-    #                                           dropout=opt.dropout,
-    #                                           clip_dim=512,
-    #                                           shared_codebook=vq_opt.shared_codebook,
-    #                                           cond_drop_prob=opt.cond_drop_prob,
-    #                                           # codebook=vq_model.quantizer.codebooks[0] if opt.fix_token_emb else None,
-    #                                           clip_version=clip_version,
-    #                                           opt=opt)
-
 
     all_params = 0
     pc_transformer = sum(param.numel() for param in res_transformer.parameters_wo_clip())
@@ -161,8 +152,8 @@ if __name__ == '__main__':
     train_dataset = NewText2MotionDataset(opt, mean, std, train_split_file, w_vectorizer)
     val_dataset = NewText2MotionDataset(opt, mean, std, val_split_file, w_vectorizer)
 
-    train_loader = DataLoader(train_dataset, batch_size=opt.batch_size, num_workers=4, shuffle=True, drop_last=True)
-    val_loader = DataLoader(val_dataset, batch_size=opt.batch_size, num_workers=4, shuffle=True, drop_last=True)
+    train_loader = DataLoader(train_dataset, batch_size=opt.batch_size, num_workers=32, shuffle=True, drop_last=True)
+    val_loader = DataLoader(val_dataset, batch_size=opt.batch_size, num_workers=32, shuffle=True, drop_last=True)
 
     eval_val_loader, _ = get_dataset_motion_loader(dataset_opt_path, 32, 'val', device=opt.device)
 

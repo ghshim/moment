@@ -693,8 +693,8 @@ if __name__ == '__main__':
     val_loader = DataLoader(val_dataset, batch_size=opt.batch_size, num_workers=4, shuffle=True, drop_last=True)
 
     for batch_data in val_loader:
-        word_embeddings, pos_one_hots, caption, sent_len, motion, m_length, tokens = batch_data
-        print(word_embeddings.shape) # (bs, 22, 300)
-        print(pos_one_hots.shape) # (bs, 22, 15)
-        print(tokens)
+        word_embeddings, pos_one_hots, pos_indices, embedding, caption, sent_len, motion, m_length, tokens = batch_data
+        print(pos_indices.unsqueeze(2).shape) # (bs, 22,)
+        # print(pos_one_hots.shape) # (bs, 22, 15)
+        # print(tokens)
         break

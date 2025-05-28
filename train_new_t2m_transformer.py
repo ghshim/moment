@@ -30,7 +30,7 @@ def plot_t2m(data, save_dir, captions, m_lengths):
     for i, (caption, joint_data) in enumerate(zip(captions, data)):
         joint_data = joint_data[:m_lengths[i]]
         joint = recover_from_ric(torch.from_numpy(joint_data).float(), opt.joints_num).numpy()
-        save_path = pjoin(save_dir, '%02d.mp4'%i)
+        save_path = pjoin(save_dir, '%02d.gif'%i)
         # print(joint.shape)
         plot_3d_motion(save_path, kinematic_chain, joint, title=caption, fps=fps, radius=radius)
 
