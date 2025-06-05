@@ -21,7 +21,7 @@ class BaseOptions():
         self.parser.add_argument('--n_layers', type=int, default=8, help='Number of attention layers.')
         self.parser.add_argument('--ff_size', type=int, default=1024, help='FF_Size')
         self.parser.add_argument('--dropout', type=float, default=0.2, help='Dropout ratio in transformer')
-        self.parser.add_argument('--pos_dim', type=int, default=300, help='POS dimension')
+        self.parser.add_argument('--pos_emb_dim', type=int, default=300, help='POS dimension')
         self.parser.add_argument('--word_emb_dim', type=int, default=300, help='GloVe word embedding')
         self.parser.add_argument('--text_mode', type=int, default=2, help='text module mode')
 

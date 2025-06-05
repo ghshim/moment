@@ -128,7 +128,7 @@ if __name__ == '__main__':
                                           # codebook=vq_model.quantizer.codebooks[0] if opt.fix_token_emb else None,
                                           share_weight=opt.share_weight,
                                           clip_version=clip_version,
-                                          pos_dim=opt.pos_dim,
+                                          pos_emb_dim=opt.pos_emb_dim,
                                           word_emb_dim=opt.word_emb_dim,
                                           text_mode=opt.text_mode,
                                           opt=opt)

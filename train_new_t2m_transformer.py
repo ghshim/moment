@@ -57,7 +57,10 @@ def load_vq_model():
     return vq_model, vq_opt
 
 if __name__ == '__main__':
-    '''Usage: '''
+    '''
+    Usage: 
+        python train_new_t2m_transformer.py --name m-trans-v2-1 --gpu_id 0 --dataset_name t2m --batch_size 64 --vq_name rvq_nq6_dc512_nc512_noshare_qdp0.2 --text_mode 2 
+    '''
     parser = TrainT2MOptions()
     opt = parser.parse()
     fixseed(opt.seed)
@@ -119,7 +122,7 @@ if __name__ == '__main__':
                                       clip_dim=512,
                                       cond_drop_prob=opt.cond_drop_prob,
                                       clip_version=clip_version,
-                                      pos_dim=opt.pos_dim,
+                                      pos_emb_dim=opt.pos_emb_dim,
                                       word_emb_dim=opt.word_emb_dim,
                                       text_mode=opt.text_mode,
                                       opt=opt)

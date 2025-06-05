@@ -1222,7 +1222,9 @@ def evaluation_mask_transformer_test_plus_res(val_loader, vq_model, res_model, t
         num_mm_batch = 3
 
     for i, batch in enumerate(val_loader):
-        word_embeddings, pos_one_hots, clip_text, sent_len, pose, m_length, token = batch
+        # word_embeddings, pos_one_hots, clip_text, sent_len, pose, m_length, token = batch
+        word_embeddings, pos_one_hots, pos_indices, sen_embeddings, clip_text, sent_len, pose, m_length, token = batch
+        
         m_length = m_length.cuda()
 
         bs, seq = pose.shape[:2]

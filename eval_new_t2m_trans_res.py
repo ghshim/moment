@@ -4,7 +4,7 @@ from os.path import join as pjoin
 import torch
 from tqdm import tqdm
 
-from models.mask_transformer.transformer import MaskTransformer, ResidualTransformer
+from models.mask_transformer.new_transformer import MaskTransformer, ResidualTransformer
 from models.vq.model import RVQVAE, LengthEstimator
 
 from options.eval_option import EvalT2MOptions
@@ -49,15 +49,16 @@ def load_trans_model(model_opt, which_model):
                                       clip_dim=512,
                                       cond_drop_prob=model_opt.cond_drop_prob,
                                       clip_version=clip_version,
-                                      pos_dim=opt.pos_dim,
+                                      pos_emb_dim=opt.pos_emb_dim,
                                       word_emb_dim=opt.word_emb_dim,
-                                      text_mode=opt.text_mode,
+                                      text_mode=model_opt.text_mode,
                                       opt=model_opt)
     ckpt = torch.load(pjoin(model_opt.checkpoints_dir, model_opt.dataset_name, model_opt.name, 'model', which_model),
                       map_location=opt.device)
     model_key = 't2m_transformer' if 't2m_transformer' in ckpt else 'trans'
     # print(ckpt.keys())
     missing_keys, unexpected_keys = t2m_transformer.load_state_dict(ckpt[model_key], strict=False)
+    print(unexpected_keys)
     assert len(unexpected_keys) == 0
     assert all([k.startswith('clip_model.') for k in missing_keys])
     print(f'Loading Mask Transformer {opt.name} from epoch {ckpt["ep"]}!')
@@ -79,14 +80,15 @@ def load_res_model(res_opt):
                                             # codebook=vq_model.quantizer.codebooks[0] if opt.fix_token_emb else None,
                                             share_weight=res_opt.share_weight,
                                             clip_version=clip_version,
-                                            pos_dim=opt.pos_dim,
+                                            pos_emb_dim=opt.pos_emb_dim,
                                             word_emb_dim=opt.word_emb_dim,
-                                            text_mode=opt.text_mode,
+                                            text_mode=res_opt.text_mode,
                                             opt=res_opt)
 
     ckpt = torch.load(pjoin(res_opt.checkpoints_dir, res_opt.dataset_name, res_opt.name, 'model', 'net_best_fid.tar'),
                       map_location=opt.device)
     missing_keys, unexpected_keys = res_transformer.load_state_dict(ckpt['res_transformer'], strict=False)
+    print(unexpected_keys)
     assert len(unexpected_keys) == 0
     assert all([k.startswith('clip_model.') for k in missing_keys])
     print(f'Loading Residual Transformer {res_opt.name} from epoch {ckpt["ep"]}!')
@@ -101,6 +103,10 @@ def load_len_estimator(opt):
     return model
 
 if __name__ == '__main__':
+    '''
+    Usage:
+        python eval_new_t2m_trans_res.py --dataset_name t2m --cond_scale 4 --time_steps 10 --ext evaluation --name m-trans-v2 --res_name r-trans-v2 --gpu_id 0 
+    '''
     parser = EvalT2MOptions()
     opt = parser.parse()
     fixseed(opt.seed)
@@ -115,10 +121,6 @@ if __name__ == '__main__':
     model_dir = pjoin(root_dir, 'model')
     out_dir = pjoin(root_dir, 'eval')
     os.makedirs(out_dir, exist_ok=True)
-
-    out_path = pjoin(out_dir, "%s.log"%opt.ext)
-
-    f = open(pjoin(out_path), 'w')
 
     model_opt_path = pjoin(root_dir, 'opt.txt')
     model_opt = get_opt(model_opt_path, device=opt.device)
@@ -154,13 +156,17 @@ if __name__ == '__main__':
 
     wrapper_opt = get_opt(dataset_opt_path, torch.device('cuda'))
     eval_wrapper = EvaluatorModelWrapper(wrapper_opt)
-
+    
     ##### ---- Dataloader ---- #####
     opt.nb_joints = 21 if opt.dataset_name == 'kit' else 22
 
     eval_val_loader, _ = get_dataset_motion_loader(dataset_opt_path, 32, 'test', device=opt.device)
 
-    # model_dir = pjoin(opt.)
+    ### Evaluation ###
+    out_path = pjoin('./checkpoints/evaluation', f"evaluation_{model_opt.name}_{res_opt.name}.log")
+
+    f = open(pjoin(out_path), 'w')
+
     for file in os.listdir(model_dir):
         if opt.which_epoch != "all" and opt.which_epoch not in file:
             continue

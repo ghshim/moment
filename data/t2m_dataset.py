@@ -641,7 +641,7 @@ if __name__ == '__main__':
     from torch.utils.data import DataLoader
     from os.path import join as pjoin
     
-    sys.path.append('/home/gahyeon/workspace/projects/moment/')
+    sys.path.append('/home/gahyeon/Desktop/projects/moment/')
     print(sys.path)
     from options.train_option import TrainT2MOptions
     from utils.fixseed import fixseed
@@ -694,7 +694,9 @@ if __name__ == '__main__':
 
     for batch_data in val_loader:
         word_embeddings, pos_one_hots, pos_indices, embedding, caption, sent_len, motion, m_length, tokens = batch_data
-        print(pos_indices.unsqueeze(2).shape) # (bs, 22,)
+        print(caption[0])
+        print(tokens[0])
+        print(pos_indices[0]) # (bs, 22, 1)
         # print(pos_one_hots.shape) # (bs, 22, 15)
         # print(tokens)
         break

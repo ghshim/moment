@@ -2,10 +2,9 @@ import os
 from os.path import join as pjoin
 
 import torch
-from tqdm import tqdm
 
 from models.mask_transformer.transformer import MaskTransformer, ResidualTransformer
-from models.vq.model import RVQVAE, LengthEstimator
+from models.vq.model import RVQVAE
 
 from options.eval_option import EvalT2MOptions
 from utils.get_opt import get_opt
@@ -86,14 +85,6 @@ def load_res_model(res_opt):
     print(f'Loading Residual Transformer {res_opt.name} from epoch {ckpt["ep"]}!')
     return res_transformer
 
-def load_len_estimator(opt):
-    model = LengthEstimator(512, 50)
-    ckpt = torch.load(pjoin(opt.checkpoints_dir, opt.dataset_name, 'length_estimator', 'model', 'finest.tar'),
-                      map_location=opt.device)
-    model.load_state_dict(ckpt['estimator'])
-    print(f'Loading Length Estimator from epoch {ckpt["epoch"]}!')
-    return model
-
 if __name__ == '__main__':
     parser = EvalT2MOptions()
     opt = parser.parse()
@@ -110,17 +101,10 @@ if __name__ == '__main__':
     out_dir = pjoin(root_dir, 'eval')
     os.makedirs(out_dir, exist_ok=True)
 
-    out_path = pjoin(out_dir, "%s.log"%opt.ext)
-
-    f = open(pjoin(out_path), 'w')
-
     model_opt_path = pjoin(root_dir, 'opt.txt')
     model_opt = get_opt(model_opt_path, device=opt.device)
     clip_version = 'ViT-B/32'
 
-    #######################
-    ######Loading RVQ######
-    #######################
     vq_opt_path = pjoin(opt.checkpoints_dir, opt.dataset_name, model_opt.vq_name, 'opt.txt')
     vq_opt = get_opt(vq_opt_path, device=opt.device)
     vq_model, vq_opt = load_vq_model(vq_opt)
@@ -129,19 +113,11 @@ if __name__ == '__main__':
     model_opt.num_quantizers = vq_opt.num_quantizers
     model_opt.code_dim = vq_opt.code_dim
 
-    #################################
-    ######Loading R-Transformer######
-    #################################
     res_opt_path = pjoin(opt.checkpoints_dir, opt.dataset_name, opt.res_name, 'opt.txt')
     res_opt = get_opt(res_opt_path, device=opt.device)
     res_model = load_res_model(res_opt)
 
     assert res_opt.vq_name == model_opt.vq_name
-
-    ##################################
-    #####Loading Length Predictor#####
-    ##################################
-    length_estimator = load_len_estimator(model_opt)
 
     dataset_opt_path = 'checkpoints/kit/Comp_v6_KLD005/opt.txt' if opt.dataset_name == 'kit' \
         else 'checkpoints/t2m/Comp_v6_KLD005/opt.txt'
@@ -153,6 +129,11 @@ if __name__ == '__main__':
     opt.nb_joints = 21 if opt.dataset_name == 'kit' else 22
 
     eval_val_loader, _ = get_dataset_motion_loader(dataset_opt_path, 32, 'test', device=opt.device)
+
+    ### Evaluation ###
+    out_path = pjoin('./checkpoints/evaluation', f"evaluation_{model_opt.name}_{res_opt.name}.log")
+
+    f = open(pjoin(out_path), 'w')
 
     # model_dir = pjoin(opt.)
     for file in os.listdir(model_dir):
@@ -167,7 +148,6 @@ if __name__ == '__main__':
         t2m_transformer.to(opt.device)
         vq_model.to(opt.device)
         res_model.to(opt.device)
-        length_estimator.to(opt.device)
 
         fid = []
         div = []
@@ -178,22 +158,14 @@ if __name__ == '__main__':
         mm = []
 
         repeat_time = 20
-        for i in tqdm(range(repeat_time), desc='Repeat'):
+        for i in range(repeat_time):
             with torch.no_grad():
-                if opt.est_length:
-                    best_fid, best_div, Rprecision, best_matching, best_mm = \
-                        eval_t2m.evaluation_mask_transformer_test_plus_res_with_est_length(eval_val_loader, vq_model, res_model, t2m_transformer, length_estimator,
-                                                                        i, eval_wrapper=eval_wrapper,
-                                                            time_steps=opt.time_steps, cond_scale=opt.cond_scale,
-                                                            temperature=opt.temperature, topkr=opt.topkr,
-                                                                        force_mask=opt.force_mask, cal_mm=True)
-                else:
-                    best_fid, best_div, Rprecision, best_matching, best_mm = \
-                        eval_t2m.evaluation_mask_transformer_test_plus_res(eval_val_loader, vq_model, res_model, t2m_transformer, 
-                                                                        i, eval_wrapper=eval_wrapper,
-                                                            time_steps=opt.time_steps, cond_scale=opt.cond_scale,
-                                                            temperature=opt.temperature, topkr=opt.topkr,
-                                                                        force_mask=opt.force_mask, cal_mm=True)
+                best_fid, best_div, Rprecision, best_matching, best_mm = \
+                    eval_t2m.evaluation_mask_transformer_test_plus_res(eval_val_loader, vq_model, res_model, t2m_transformer,
+                                                                       i, eval_wrapper=eval_wrapper,
+                                                         time_steps=opt.time_steps, cond_scale=opt.cond_scale,
+                                                         temperature=opt.temperature, topkr=opt.topkr,
+                                                                       force_mask=opt.force_mask, cal_mm=True)
             fid.append(best_fid)
             div.append(best_div)
             top1.append(Rprecision[0])
