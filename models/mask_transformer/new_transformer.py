@@ -196,10 +196,10 @@ class MaskTransformer(nn.Module):
         Preparing frozen weights
         '''
 
-        # if self.cond_mode == 'text':
-        #     print('Loading CLIP...')
-        #     self.clip_version = clip_version
-        #     self.clip_model = self.load_and_freeze_clip(clip_version)
+        if self.cond_mode == 'text':
+            print('Loading CLIP...')
+            self.clip_version = clip_version
+            self.clip_model = self.load_and_freeze_clip(clip_version)
 
         self.noise_schedule = cosine_schedule
 
@@ -245,12 +245,17 @@ class MaskTransformer(nn.Module):
         return clip_model
 
 
-    def encode_text(self, clip_emb, word_emb=None, pos=None):
+    def encode_text(self, raw_text, word_emb=None, pos=None):
         '''
         clip_embed: clip embedding (bs, 512)
         word_embed: word embedding (bs, max_text_len+2, 300)
         pos_one_hot: POS one hot vector (bs, max_text_len+2, 15)
         '''
+        with torch.no_grad():
+            device = next(self.parameters()).device
+            text = clip.tokenize(raw_text, truncate=True).to(device)
+            clip_emb = self.clip_model.encode_text(text).float()
+
         if self.text_mode == 0:
             return clip_emb
         
@@ -485,7 +490,7 @@ class MaskTransformer(nn.Module):
 
         # Prepare cond vector
         if self.cond_mode == 'text':
-            cond_vector = self.encode_text(sen_emb, word_emb=word_emb, pos=pos)  # (cond_len, b, d)
+            cond_vector = self.encode_text(conds, word_emb=word_emb, pos=pos)  # (cond_len, b, d)
             cond_seq_len = cond_vector.shape[0]
         elif self.cond_mode == 'action':
             cond_vector = self.enc_action(conds).to(device)
@@ -923,10 +928,10 @@ class ResidualTransformer(nn.Module):
         self.shared_codebook = shared_codebook
         self.share_weight = share_weight
 
-        # if self.cond_mode == 'text':
-        #     print('Loading CLIP...')
-        #     self.clip_version = clip_version
-        #     self.clip_model = self.load_and_freeze_clip(clip_version)
+        if self.cond_mode == 'text':
+            print('Loading CLIP...')
+            self.clip_version = clip_version
+            self.clip_model = self.load_and_freeze_clip(clip_version)
 
    
     def mask_cond(self, cond, force_mask=False):
@@ -977,12 +982,17 @@ class ResidualTransformer(nn.Module):
 
         return clip_model
 
-    def encode_text(self, clip_emb, word_emb=None, pos=None):
+    def encode_text(self, raw_text, word_emb=None, pos=None):
         '''
         clip_embed: clip embedding (bs, 512)
         word_embed: word embedding (bs, max_text_len+2, 300)
         pos_one_hot: POS one hot vector (bs, max_text_len+2, 15)
         '''
+        with torch.no_grad():
+            device = next(self.parameters()).device
+            text = clip.tokenize(raw_text, truncate=True).to(device)
+            clip_emb = self.clip_model.encode_text(text).float()
+
         if self.text_mode == 0:
             return clip_emb
         
@@ -1214,7 +1224,7 @@ class ResidualTransformer(nn.Module):
         batch_size = len(conds)
 
         if self.cond_mode == 'text':
-            cond_vector = self.encode_text(sen_emb, word_emb=word_emb, pos=pos)  # (cond_len, b, d)
+            cond_vector = self.encode_text(conds, word_emb=word_emb, pos=pos)  # (cond_len, b, d)
             cond_seq_len = cond_vector.shape[0]
         elif self.cond_mode == 'action':
             cond_vector = self.enc_action(conds).to(device)

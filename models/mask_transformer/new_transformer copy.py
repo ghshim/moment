@@ -197,10 +197,10 @@ class MaskTransformer(nn.Module):
         Preparing frozen weights
         '''
 
-        # if self.cond_mode == 'text':
-        #     print('Loading CLIP...')
-        #     self.clip_version = clip_version
-        #     self.clip_model = self.load_and_freeze_clip(clip_version)
+        if self.cond_mode == 'text':
+            print('Loading CLIP...')
+            self.clip_version = clip_version
+            self.clip_model = self.load_and_freeze_clip(clip_version)
 
         self.noise_schedule = cosine_schedule
 
@@ -914,10 +914,10 @@ class ResidualTransformer(nn.Module):
         self.shared_codebook = shared_codebook
         self.share_weight = share_weight
 
-        # if self.cond_mode == 'text':
-        #     print('Loading CLIP...')
-        #     self.clip_version = clip_version
-        #     self.clip_model = self.load_and_freeze_clip(clip_version)
+        if self.cond_mode == 'text':
+            print('Loading CLIP...')
+            self.clip_version = clip_version
+            self.clip_model = self.load_and_freeze_clip(clip_version)
 
    
     def mask_cond(self, cond, force_mask=False):

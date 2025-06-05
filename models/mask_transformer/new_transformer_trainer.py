@@ -62,7 +62,7 @@ class MaskTransformerTrainer:
         # self.acc = []
 
         if self.cond_mode == 'text':
-            _loss, _pred_ids, _acc = self.t2m_transformer(code_idx[..., 0], sen_embedding, m_lens, word_emb=word_embeddings, pos=pos_indices)
+            _loss, _pred_ids, _acc = self.t2m_transformer(code_idx[..., 0], conds, m_lens, word_emb=word_embeddings, pos=pos_indices)
         else:
             _loss, _pred_ids, _acc = self.t2m_transformer(code_idx[..., 0], conds, m_lens)
 
@@ -253,7 +253,7 @@ class ResidualTransformerTrainer:
         conds = conds.to(self.device).float() if torch.is_tensor(conds) else conds
         
         if self.cond_mode == 'text':
-            ce_loss, pred_ids, acc = self.res_transformer(code_idx, sen_embedding, m_lens, word_emb=word_embeddings, pos=pos_indices)
+            ce_loss, pred_ids, acc = self.res_transformer(code_idx, conds, m_lens, word_emb=word_embeddings, pos=pos_indices)
         else:
             ce_loss, pred_ids, acc = self.res_transformer(code_idx, conds, m_lens)
 
