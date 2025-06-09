@@ -2,21 +2,77 @@ import os
 from os.path import join as pjoin
 
 import torch
-from tqdm import tqdm
 
 from models.mask_transformer.new_transformer import MaskTransformer, ResidualTransformer
-from models.vq.model import RVQVAE, LengthEstimator
-from models.length_estimator.new_len_est import CoLenNet
+from models.vq.model import RVQVAE
 
 from options.eval_option import EvalT2MOptions
 from utils.get_opt import get_opt
 from motion_loaders.dataset_motion_loader import get_dataset_motion_loader
 from models.t2m_eval_wrapper import EvaluatorModelWrapper
+from utils.word_vectorizer import WordVectorizer
 
 import utils.eval_t2m as eval_t2m
 from utils.fixseed import fixseed
+from utils.plot_script import plot_3d_motion
+from utils.motion_process import recover_from_ric
+from utils.get_opt import get_opt
+from utils.fixseed import fixseed
+from utils.paramUtil import t2m_kinematic_chain, kit_kinematic_chain
 
-import numpy as np
+import numpy as np  
+
+text_list = [
+    'A person walks forward.',
+    'A person walks slowly forward.',
+    'A person walks briskly forward.',
+
+    'A person is running on a treadmill.',
+    'A person is running fast on a teadmill.',
+    'A person is running slowly on a treadmill.',
+
+    'A person picks something up from the floor.',
+    'A person carefully picks something up from the floor.',
+    'A person quickly picks something up from the floor.',
+
+    'A person waves with their right hand.',
+    'A person waves happily with their right hand.',
+    'A person waves sadly with their right hand.',
+
+    'A person sits down on the floor.',
+    'A person sits down carefully on the floor.',
+    'A person sits down sadly on the floor.',
+
+    'A person turns to the right.',
+    'A person turns quickly to the right.',
+    'A person turns carefully to the right.'
+]
+
+token_list = [
+    ['A/DET', 'person/NOUN', 'walks/Act_VIP', 'forward/Loc_VIP'],
+    ['A/DET', 'person/NOUN', 'walks/Act_VIP', 'slowly/Desc_VIP', 'forward/Loc_VIP'],
+    ['A/DET', 'person/NOUN', 'walks/Act_VIP', 'briskly/ADV', 'forward/Loc_VIP'],
+
+    ['A/DET', 'person/NOUN', 'is/AUX', 'running/Act_VIP', 'on/ADP', 'a/DET', 'treadmill/NOUN'],
+    ['A/DET', 'person/NOUN', 'is/AUX', 'running/Act_VIP', 'fast/Desc_VIP', 'on/ADP', 'a/DET', 'teadmill/NOUN'],
+    ['A/DET', 'person/NOUN', 'is/AUX', 'running/Act_VIP', 'slowly/Desc_VIP', 'on/ADP', 'a/DET', 'treadmill/NOUN'],
+
+    ['A/DET', 'person/NOUN', 'picks/Act_VIP', 'something/PRON', 'up/ADP', 'from/ADP', 'the/DET', 'floor/Obj_VIP'],
+    ['A/DET', 'person/NOUN', 'carefully/Desc_VIP', 'picks/Act_VIP', 'something/PRON', 'up/ADP', 'from/ADP', 'the/DET', 'floor/Obj_VIP'],
+    ['A/DET', 'person/NOUN', 'quickly/Desc_VIP', 'picks/Act_VIP', 'something/PRON', 'up/ADP', 'from/ADP', 'the/DET', 'floor/Obj_VIP'],
+
+    ['A/DET', 'person/NOUN', 'waves/Act_VIP', 'with/ADP', 'their/PRON', 'right/Loc_VIP', 'hand/Body_VIP'],
+    ['A/DET', 'person/NOUN', 'waves/Act_VIP', 'happily/Desc_VIP', 'with/ADP', 'their/PRON', 'right/Loc_VIP', 'hand/Body_VIP'],
+    ['A/DET', 'person/NOUN', 'waves/Act_VIP', 'sadly/Desc_VIP', 'with/ADP', 'their/PRON', 'right/Loc_VIP', 'hand/Body_VIP'],
+
+    ['A/DET', 'person/NOUN', 'sits/Act_VIP', 'down/Loc_VIP', 'on/ADP', 'the/DET', 'floor/Obj_VIP'],
+    ['A/DET', 'person/NOUN', 'sits/Act_VIP', 'down/Loc_VIP', 'carefully/Desc_VIP', 'on/ADP', 'the/DET', 'floor/Obj_VIP'],
+    ['A/DET', 'person/NOUN', 'sits/Act_VIP', 'down/Loc_VIP', 'sadly/Desc_VIP', 'on/ADP', 'the/DET', 'floor/Obj_VIP'],
+
+    ['A/DET', 'person/NOUN', 'turns/Act_VIP', 'to/ADP', 'the/DET', 'right/Loc_VIP'],
+    ['A/DET', 'person/NOUN', 'turns/Act_VIP', 'quickly/Desc_VIP', 'to/ADP', 'the/DET', 'right/Loc_VIP'],
+    ['A/DET', 'person/NOUN', 'turns/Act_VIP', 'carefully/Desc_VIP', 'to/ADP', 'the/DET', 'right/Loc_VIP'],
+]
 
 def load_vq_model(vq_opt):
     # opt_path = pjoin(opt.checkpoints_dir, opt.dataset_name, opt.vq_name, 'opt.txt')
@@ -54,7 +110,7 @@ def load_trans_model(model_opt, which_model):
                                       word_emb_dim=opt.word_emb_dim,
                                       text_mode=model_opt.text_mode,
                                       opt=model_opt)
-    ckpt = torch.load(pjoin(model_opt.checkpoints_dir, model_opt.dataset_name, model_opt.name, 'model', 'latest.tar'),
+    ckpt = torch.load(pjoin(model_opt.checkpoints_dir, model_opt.dataset_name, model_opt.name, 'model', which_model),
                       map_location=opt.device)
     model_key = 't2m_transformer' if 't2m_transformer' in ckpt else 'trans'
     # print(ckpt.keys())
@@ -95,32 +151,69 @@ def load_res_model(res_opt):
     print(f'Loading Residual Transformer {res_opt.name} from epoch {ckpt["ep"]}!')
     return res_transformer
 
-# def load_len_estimator(opt, model_name):
-#     model = LengthEstimator(512, 50)
-#     ckpt = torch.load(pjoin(opt.checkpoints_dir, opt.dataset_name, 'len_estimator', model_name, 'finest.tar'),
-#                       map_location=opt.device)
-#     model.load_state_dict(ckpt['estimator'])
-#     print(f'Loading Length Estimator from epoch {ckpt["epoch"]}!')
-#     return model
+@torch.no_grad()
+def inference(val_loader, vq_model, res_model, trans, repeat_id, eval_wrapper,
+                                time_steps, cond_scale, temperature, topkr, gsample=True, force_mask=False,
+                                              cal_mm=True, res_cond_scale=5):
+    trans.eval()
+    vq_model.eval()
+    res_model.eval()
 
-def load_len_estimator(opt, model_name):
-    model = CoLenNet(
-        text_embed_dim=512,
-        motion_embed_dim=263,
-        hidden_dim=1024,
-        use_ours=False
-    )
-    ckpt = torch.load(pjoin(opt.checkpoints_dir, 'len_estimator', model_name, 'best_model.pt'),
-                      map_location=opt.device)
-    model.load_state_dict(ckpt)
-    model.to(opt.device)
-    return model
+    w_vectorizer = WordVectorizer('./glove', 'our_vab')
+
+    max_length = torch.from_numpy(np.array([196,] * len(text_list))).cuda()
+
+    anim_dir = os.path.join(out_dir, 'animation')
+    joint_dir = os.path.join(out_dir, 'joint')
+    os.makedirs(anim_dir, exist_ok=True)
+    os.makedirs(joint_dir, exist_ok=True)
+
+    for i, (clip_text, tokens) in enumerate(zip(text_list, token_list)):
+        '''Make word embedding'''
+        tokens = ['sos/OTHER'] + tokens + ['eos/OTHER']
+        pos_indices = []
+        word_embeddings = []
+        for token in tokens:
+            word_emb, pos_oh = w_vectorizer[token]
+            pos_index = np.argmax(pos_oh)  # one-hot → int index
+            pos_indices.append(pos_index)
+            word_embeddings.append(word_emb[None, :])
+        pos_indices = np.array(pos_indices) 
+        word_embeddings = np.concatenate(word_embeddings, axis=0)
+
+        pos_indices = torch.from_numpy(pos_indices).long().cuda().unsqueeze(0)
+        word_embeddings = torch.from_numpy(word_embeddings).float().cuda().unsqueeze(0)
+
+        '''inference'''
+        length = torch.from_numpy(np.array([196,])).cuda()
+        mids = trans.generate(clip_text, length // 4, time_steps, cond_scale,
+                                temperature=temperature, topk_filter_thres=topkr,
+                                gsample=gsample, force_mask=force_mask,
+                                sen_emb=None, word_emb=word_embeddings, pos=pos_indices)
+
+        # motion_codes = motion_codes.permute(0, 2, 1)
+        # mids.unsqueeze_(-1)
+        pred_ids = res_model.generate(mids, clip_text, length // 4, temperature=1, cond_scale=res_cond_scale,
+                                      sen_emb=None, word_emb=word_embeddings, pos=pos_indices)
+        # pred_codes = trans(code_indices[..., 0], clip_text, m_length//4, force_mask=force_mask)
+        # pred_ids = torch.where(pred_ids==-1, 0, pred_ids)
+
+        pred_motions = vq_model.forward_decoder(pred_ids)
+
+    
+        data = pred_motions.detach().cpu().numpy()
+        lengths = max_length.cpu().numpy()
+        save_path = os.path.join(anim_dir, f'{i:04d}.gif')
+        
+        data = val_loader.dataset.inv_transform(data)
+        joint = recover_from_ric(torch.from_numpy(data).float(), 22).numpy()
+        joint_path = os.path.join(joint_dir, f'{i:04d}.npy')
+        np.save(joint_path, joint[0])
+
+        plot_3d_motion(save_path, t2m_kinematic_chain, joint[0], title=clip_text, fps=20, radius=4)
+
 
 if __name__ == '__main__':
-    '''
-    Usage:
-        python eval_new_t2m_trans_res.py --dataset_name t2m --cond_scale 4 --time_steps 10 --ext evaluation --name m-trans-v2 --res_name r-trans-v2 --gpu_id 0 
-    '''
     parser = EvalT2MOptions()
     opt = parser.parse()
     fixseed(opt.seed)
@@ -133,16 +226,11 @@ if __name__ == '__main__':
     # out_dir = pjoin(opt.check)
     root_dir = pjoin(opt.checkpoints_dir, opt.dataset_name, opt.name)
     model_dir = pjoin(root_dir, 'model')
-    out_dir = pjoin(root_dir, 'eval')
-    os.makedirs(out_dir, exist_ok=True)
 
     model_opt_path = pjoin(root_dir, 'opt.txt')
     model_opt = get_opt(model_opt_path, device=opt.device)
     clip_version = 'ViT-B/32'
 
-    #######################
-    ######Loading RVQ######
-    #######################
     vq_opt_path = pjoin(opt.checkpoints_dir, opt.dataset_name, model_opt.vq_name, 'opt.txt')
     vq_opt = get_opt(vq_opt_path, device=opt.device)
     vq_model, vq_opt = load_vq_model(vq_opt)
@@ -151,36 +239,29 @@ if __name__ == '__main__':
     model_opt.num_quantizers = vq_opt.num_quantizers
     model_opt.code_dim = vq_opt.code_dim
 
-    #################################
-    ######Loading R-Transformer######
-    #################################
     res_opt_path = pjoin(opt.checkpoints_dir, opt.dataset_name, opt.res_name, 'opt.txt')
     res_opt = get_opt(res_opt_path, device=opt.device)
     res_model = load_res_model(res_opt)
 
     assert res_opt.vq_name == model_opt.vq_name
 
-    ##################################
-    #####Loading Length Predictor#####
-    ##################################
-    length_estimator = load_len_estimator(model_opt, 'colen-v0-46')
-
+    
     dataset_opt_path = 'checkpoints/kit/Comp_v6_KLD005/opt.txt' if opt.dataset_name == 'kit' \
         else 'checkpoints/t2m/Comp_v6_KLD005/opt.txt'
 
     wrapper_opt = get_opt(dataset_opt_path, torch.device('cuda'))
     eval_wrapper = EvaluatorModelWrapper(wrapper_opt)
-    
+
     ##### ---- Dataloader ---- #####
     opt.nb_joints = 21 if opt.dataset_name == 'kit' else 22
 
     eval_val_loader, _ = get_dataset_motion_loader(dataset_opt_path, 32, 'test', device=opt.device)
 
     ### Evaluation ###
-    out_path = pjoin('./checkpoints/evaluation', f"evaluation_{model_opt.name}_{res_opt.name}.log")
+    out_dir = pjoin('./checkpoints/evaluation', f"{model_opt.name}_{res_opt.name}")
+    os.makedirs(out_dir, exist_ok=True)
 
-    f = open(pjoin(out_path), 'w')
-
+    # model_dir = pjoin(opt.)
     for file in os.listdir(model_dir):
         if opt.which_epoch != "all" and opt.which_epoch not in file:
             continue
@@ -193,62 +274,12 @@ if __name__ == '__main__':
         t2m_transformer.to(opt.device)
         vq_model.to(opt.device)
         res_model.to(opt.device)
-        length_estimator.to(opt.device)
 
-        fid = []
-        div = []
-        top1 = []
-        top2 = []
-        top3 = []
-        matching = []
-        mm = []
-
-        repeat_time = 20
-        for i in tqdm(range(repeat_time), desc='Repeat'):
-            with torch.no_grad():
-                if opt.est_length:
-                    best_fid, best_div, Rprecision, best_matching, best_mm = \
-                        eval_t2m.new_evaluation_mask_transformer_test_plus_res_with_len_est(eval_val_loader, vq_model, res_model, t2m_transformer, length_estimator,
-                                                                        i, eval_wrapper=eval_wrapper,
-                                                            time_steps=opt.time_steps, cond_scale=opt.cond_scale,
-                                                            temperature=opt.temperature, topkr=opt.topkr,
-                                                                        force_mask=opt.force_mask, cal_mm=True)
-                else:
-                    best_fid, best_div, Rprecision, best_matching, best_mm = \
-                        eval_t2m.new_evaluation_mask_transformer_test_plus_res(eval_val_loader, vq_model, res_model, t2m_transformer, 
-                                                                        i, eval_wrapper=eval_wrapper,
-                                                            time_steps=opt.time_steps, cond_scale=opt.cond_scale,
-                                                            temperature=opt.temperature, topkr=opt.topkr,
-                                                                        force_mask=opt.force_mask, cal_mm=True)
-            fid.append(best_fid)
-            div.append(best_div)
-            top1.append(Rprecision[0])
-            top2.append(Rprecision[1])
-            top3.append(Rprecision[2])
-            matching.append(best_matching)
-            mm.append(best_mm)
-
-        fid = np.array(fid)
-        div = np.array(div)
-        top1 = np.array(top1)
-        top2 = np.array(top2)
-        top3 = np.array(top3)
-        matching = np.array(matching)
-        mm = np.array(mm)
-
-        print(f'{file} final result:')
-        print(f'{file} final result:', file=f, flush=True)
-
-        msg_final = f"\tFID: {np.mean(fid):.3f}, conf. {np.std(fid) * 1.96 / np.sqrt(repeat_time):.3f}\n" \
-                    f"\tDiversity: {np.mean(div):.3f}, conf. {np.std(div) * 1.96 / np.sqrt(repeat_time):.3f}\n" \
-                    f"\tTOP1: {np.mean(top1):.3f}, conf. {np.std(top1) * 1.96 / np.sqrt(repeat_time):.3f}, TOP2. {np.mean(top2):.3f}, conf. {np.std(top2) * 1.96 / np.sqrt(repeat_time):.3f}, TOP3. {np.mean(top3):.3f}, conf. {np.std(top3) * 1.96 / np.sqrt(repeat_time):.3f}\n" \
-                    f"\tMatching: {np.mean(matching):.3f}, conf. {np.std(matching) * 1.96 / np.sqrt(repeat_time):.3f}\n" \
-                    f"\tMultimodality:{np.mean(mm):.3f}, conf.{np.std(mm) * 1.96 / np.sqrt(repeat_time):.3f}\n\n"
-        # logger.info(msg_final)
-        print(msg_final)
-        print(msg_final, file=f, flush=True)
-
-    f.close()
-
+        with torch.no_grad():
+            inference(eval_val_loader, vq_model, res_model, t2m_transformer,
+                        0, eval_wrapper=eval_wrapper,
+                        time_steps=opt.time_steps, cond_scale=opt.cond_scale,
+                        temperature=opt.temperature, topkr=opt.topkr,
+                        force_mask=opt.force_mask, cal_mm=True)
 
 # python eval_t2m_trans.py --name t2m_nlayer8_nhead6_ld384_ff1024_cdp0.1_vq --dataset_name t2m --gpu_id 3 --cond_scale 4 --time_steps 18 --temperature 1 --topkr 0.9 --gumbel_sample --ext cs4_ts18_tau1_topkr0.9_gs

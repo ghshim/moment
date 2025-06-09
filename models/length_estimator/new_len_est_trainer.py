@@ -1,28 +1,37 @@
 import torch
+import torch.nn as nn
 import os
 from tqdm import tqdm
 import wandb
 
-class CoLengthTrainer:
+from utils.utils import *
+
+class CoLenTrainer:
     def __init__(self, opt, model):
         self.opt = opt
         self.model = model.to(opt.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=opt.lr)
         self.device = opt.device
 
-        self.cls_criterion = torch.nn.CrossEntropyLoss()
+        self.regression_criterion = nn.MSELoss()
         self.best_val_loss = float('inf')
+
+        self.r_w = 0.4
+        self.c_w = 0.6
 
         self.save_dir = os.path.join(opt.checkpoints_dir, opt.name)
         os.makedirs(self.save_dir, exist_ok=True)
 
     def train(self, train_loader, val_loader):
+        wandb_init("MOMENT-LenEst", config=self.opt, id=self.opt.name)
+
         for epoch in tqdm(range(1, self.opt.num_epochs + 1)):
             train_loss = self.train_epoch(train_loader, epoch)
             val_loss = self.validate(val_loader)
 
+            wandb.log({"Epoch": epoch, "Train Loss": train_loss, "Validation Loss": val_loss})
             print(f"[Epoch {epoch}] Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
-
+            
             # Save best model
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
@@ -35,27 +44,33 @@ class CoLengthTrainer:
         total_loss = 0
 
         for batch in loader:
-            caption, motion_feat, length_label, text_feat = batch
+            # caption, motion_feat, length_label, text_feat = batch
+            word_embeddings, pos_one_hots, pos_indices, sen_embedding, caption, sent_len, motion, m_lens, tokens = batch
             
-            text_feat = text_feat.to(self.device).float()
-            motion_feat = motion_feat.to(self.device).float()
-            length_label = length_label.to(self.device).long()
+            text_feat = sen_embedding.to(self.device).float()
+            pos_indices = pos_indices.to(self.device).long()
+            word_embeddings = word_embeddings.to(self.device).float()
+            motion_feat = motion.to(self.device).float()
+            text_feat = sen_embedding.to(self.device).float()
+            length_label = m_lens.to(self.device).float()
 
             self.optimizer.zero_grad()
 
-            text_emb, motion_emb, logits = self.model(text_feat, motion_feat)
+            text_emb, motion_emb, length_pred = self.model(text_feat, motion_feat, word_emb=word_embeddings, pos=pos_indices)
 
-            # Classification loss
-            cls_loss = self.cls_criterion(logits, length_label)
+            # Regression loss (length estimation)
+            reg_loss = self.regression_criterion(length_pred, length_label)  # float target
 
             # Contrastive loss (InfoNCE)
             cont_loss = self.contrastive_loss(text_emb, motion_emb)
 
-            loss = cls_loss + cont_loss
+            loss = self.c_w * cont_loss + self.r_w * reg_loss
             loss.backward()
             self.optimizer.step()
 
             total_loss += loss.item()
+
+            wandb.log({"Regression Loss": reg_loss, "Contrastive Loss": cont_loss})
 
         return total_loss / len(loader)
 
@@ -65,18 +80,21 @@ class CoLengthTrainer:
 
         with torch.no_grad():
             for batch in loader:
-                caption, motion_feat, length_label, text_feat = batch
-                
-                text_feat = text_feat.to(self.device).float()
-                motion_feat = motion_feat.to(self.device).float()
-                length_label = length_label.to(self.device).long()
+                word_embeddings, pos_one_hots, pos_indices, sen_embedding, caption, sent_len, motion, m_lens, tokens = batch
+            
+                text_feat = sen_embedding.to(self.device).float()
+                pos_indices = pos_indices.to(self.device).long()
+                word_embeddings = word_embeddings.to(self.device).float()
+                motion_feat = motion.to(self.device).float()
+                text_feat = sen_embedding.to(self.device).float()
+                length_label = m_lens.to(self.device).float()
 
-                text_emb, motion_emb, logits = self.model(text_feat, motion_feat)
+                text_emb, motion_emb, length_pred = self.model(text_feat, motion_feat, word_emb=word_embeddings, pos=pos_indices)
 
-                cls_loss = self.cls_criterion(logits, length_label)
+                reg_loss = self.regression_criterion(length_pred, length_label)  # float target
                 cont_loss = self.contrastive_loss(text_emb, motion_emb)
 
-                loss = cls_loss + cont_loss
+                loss = self.c_w * cont_loss + self.r_w * reg_loss
                 total_loss += loss.item()
 
         return total_loss / len(loader)

@@ -296,7 +296,7 @@ class TextEncoderBiGRU(nn.Module):
         gru_seq, gru_last = self.gru(emb, hidden)
 
         gru_last = torch.cat([gru_last[0], gru_last[1]], dim=-1)
-        gru_seq = pad_packed_sequence(gru_seq, batch_first=True)[0]
+        gru_seq = pad_packed_sequence(gru_seq, batch_first=True, enforce_sorted=False)[0]
         forward_seq = gru_seq[..., :self.hidden_size]
         backward_seq = gru_seq[..., self.hidden_size:].clone()
 
@@ -429,7 +429,7 @@ class MotionLenEstimatorBiGRU(nn.Module):
         hidden = self.hidden.repeat(1, num_samples, 1)
 
         cap_lens = cap_lens.data.tolist()
-        emb = pack_padded_sequence(input_embs, cap_lens, batch_first=True)
+        emb = pack_padded_sequence(input_embs, cap_lens, batch_first=True, enforce_sorted=False)
 
         gru_seq, gru_last = self.gru(emb, hidden)
 

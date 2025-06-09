@@ -47,7 +47,7 @@ class TrainLenEstOptions():
         self.parser.add_argument("--unit_length", type=int, default=4, help="Length of motion")
         self.parser.add_argument("--max_text_len", type=int, default=20, help="Length of motion")
 
-        self.parser.add_argument('--num_epochs', type=int, default=50, help='Training iterations')
+        self.parser.add_argument('--num_epochs', type=int, default=300, help='Training iterations')
 
         self.parser.add_argument('--lr', type=float, default=1e-4, help='Layers of GRU')
 

@@ -13,6 +13,9 @@ from utils.get_opt import get_opt
 from motion_loaders.dataset_motion_loader import get_dataset_motion_loader
 from models.t2m_eval_wrapper import EvaluatorModelWrapper
 
+from utils.word_vectorizer import POS_enumerator
+from networks.modules import MotionLenEstimatorBiGRU
+
 import utils.eval_t2m as eval_t2m
 from utils.fixseed import fixseed
 
@@ -104,22 +107,25 @@ def load_res_model(res_opt):
 #     return model
 
 def load_len_estimator(opt, model_name):
-    model = CoLenNet(
-        text_embed_dim=512,
-        motion_embed_dim=263,
-        hidden_dim=1024,
-        use_ours=False
-    )
-    ckpt = torch.load(pjoin(opt.checkpoints_dir, 'len_estimator', model_name, 'best_model.pt'),
-                      map_location=opt.device)
-    model.load_state_dict(ckpt)
-    model.to(opt.device)
-    return model
+    # model = CoLenNet(
+    #     text_embed_dim=512,
+    #     motion_embed_dim=263,
+    #     hidden_dim=1024,
+    #     use_ours=False
+    # )
+    # ckpt = torch.load(pjoin(opt.checkpoints_dir, 'len_estimator', model_name, 'best_model.pt'),
+    #                   map_location=opt.device)
+    # model.load_state_dict(ckpt)
+    # model.to(opt.device)
+    estimator = MotionLenEstimatorBiGRU(300, len(POS_enumerator), 512, 200 // opt.unit_length)
+    estimator.load_state_dict(torch.load('./checkpoints/len_estimator/length_est_bigru/model/latest.tar', map_location=opt.device)['estimator'])
+    estimator.to(opt.device)
+    return estimator
 
 if __name__ == '__main__':
     '''
     Usage:
-        python eval_new_t2m_trans_res.py --dataset_name t2m --cond_scale 4 --time_steps 10 --ext evaluation --name m-trans-v2 --res_name r-trans-v2 --gpu_id 0 
+        python eval_new_t2m_trans_res_len_est.py --dataset_name t2m --cond_scale 4 --time_steps 10 --ext evaluation --name m-trans-v2 --res_name r-trans-v2 --gpu_id 0 
     '''
     parser = EvalT2MOptions()
     opt = parser.parse()
@@ -208,7 +214,7 @@ if __name__ == '__main__':
             with torch.no_grad():
                 if opt.est_length:
                     best_fid, best_div, Rprecision, best_matching, best_mm = \
-                        eval_t2m.new_evaluation_mask_transformer_test_plus_res_with_len_est(eval_val_loader, vq_model, res_model, t2m_transformer, length_estimator,
+                        eval_t2m.new_evaluation_mask_transformer_test_plus_res_with_base_len_est(eval_val_loader, vq_model, res_model, t2m_transformer, length_estimator,
                                                                         i, eval_wrapper=eval_wrapper,
                                                             time_steps=opt.time_steps, cond_scale=opt.cond_scale,
                                                             temperature=opt.temperature, topkr=opt.topkr,

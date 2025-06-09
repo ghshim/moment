@@ -1572,3 +1572,296 @@ def new_evaluation_mask_transformer_test_plus_res(val_loader, vq_model, res_mode
     print(msg)
     return fid, diversity, R_precision, matching_score_pred, multimodality
 
+
+
+@torch.no_grad()
+def new_evaluation_mask_transformer_test_plus_res_with_len_est(val_loader, vq_model, res_model, trans, length_estimator,
+                                                               repeat_id, eval_wrapper,
+                                                               time_steps, cond_scale, temperature, topkr, gsample=True, force_mask=False,
+                                                               cal_mm=True, res_cond_scale=5):
+    trans.eval()
+    vq_model.eval()
+    res_model.eval()
+    length_estimator.eval()
+
+    motion_annotation_list = []
+    motion_pred_list = []
+    motion_multimodality = []
+    R_precision_real = 0
+    R_precision = 0
+    matching_score_real = 0
+    matching_score_pred = 0
+    multimodality = 0
+
+    nb_sample = 0
+    if force_mask or (not cal_mm):
+        num_mm_batch = 0
+    else:
+        num_mm_batch = 3
+
+    for i, batch in enumerate(val_loader):
+        word_embeddings, pos_one_hots, pos_indices, sen_embeddings, clip_text, sent_len, pose, m_length, token = batch
+        word_embeddings = word_embeddings.float().cuda()
+        pos_indices = pos_indices.long().cuda()
+        sen_embeddings = sen_embeddings.float().cuda()
+        m_length = m_length.cuda()
+
+        bs, seq = pose.shape[:2]
+        # num_joints = 21 if pose.shape[-1] == 251 else 22
+        ### Length estimation ###
+        with torch.no_grad():
+            _, _, length_pred = length_estimator(sen_embeddings, motion_feat=None, word_emb=word_embeddings, pos=pos_indices)
+            length_pred = length_pred * 200.0
+            # print(m_length)
+            # print(length_pred)  # 예측된 모션 길이
+            length_pred = torch.clamp(length_pred, min=20, max=196)  
+            length_pred = length_pred.long() 
+
+        # for i in range(mm_batch)
+        if i < num_mm_batch:
+        # (b, seqlen, c)
+            motion_multimodality_batch = []
+            for _ in range(30):
+                mids = trans.generate(clip_text, length_pred // 4, time_steps, cond_scale,
+                                      temperature=temperature, topk_filter_thres=topkr,
+                                      gsample=gsample, force_mask=force_mask,
+                                      sen_emb=sen_embeddings, word_emb=word_embeddings, pos=pos_indices)
+
+                # motion_codes = motion_codes.permute(0, 2, 1)
+                # mids.unsqueeze_(-1)
+                pred_ids = res_model.generate(mids, clip_text, length_pred // 4, temperature=1, cond_scale=res_cond_scale,
+                                              sen_emb=sen_embeddings, word_emb=word_embeddings, pos=pos_indices)
+                # pred_codes = trans(code_indices[..., 0], clip_text, m_length//4, force_mask=force_mask)
+                # pred_ids = torch.where(pred_ids==-1, 0, pred_ids)
+
+                pred_motions = vq_model.forward_decoder(pred_ids)
+
+                # pred_motions = vq_model.decoder(codes)
+                # pred_motions = vq_model.forward_decoder(mids)
+
+                et_pred, em_pred = eval_wrapper.get_co_embeddings(word_embeddings, pos_one_hots, sent_len, pred_motions.clone(),
+                                                                  length_pred)
+                # em_pred = em_pred.unsqueeze(1)  #(bs, 1, d)
+                motion_multimodality_batch.append(em_pred.unsqueeze(1))
+            motion_multimodality_batch = torch.cat(motion_multimodality_batch, dim=1) #(bs, 30, d)
+            motion_multimodality.append(motion_multimodality_batch)
+            
+        else:
+            mids = trans.generate(clip_text, length_pred // 4, time_steps, cond_scale,
+                                  temperature=temperature, topk_filter_thres=topkr,
+                                  force_mask=force_mask,
+                                  sen_emb=sen_embeddings, word_emb=word_embeddings, pos=pos_indices)
+
+            # motion_codes = motion_codes.permute(0, 2, 1)
+            # mids.unsqueeze_(-1)
+            pred_ids = res_model.generate(mids, clip_text, length_pred // 4, temperature=1, cond_scale=res_cond_scale,
+                                          sen_emb=sen_embeddings, word_emb=word_embeddings, pos=pos_indices)
+            # pred_codes = trans(code_indices[..., 0], clip_text, m_length//4, force_mask=force_mask)
+            # pred_ids = torch.where(pred_ids == -1, 0, pred_ids)
+
+            pred_motions = vq_model.forward_decoder(pred_ids)
+            # pred_motions = vq_model.forward_decoder(mids)
+
+            et_pred, em_pred = eval_wrapper.get_co_embeddings(word_embeddings, pos_one_hots, sent_len,
+                                                              pred_motions.clone(),
+                                                              length_pred)
+
+        pose = pose.cuda().float()
+
+        et, em = eval_wrapper.get_co_embeddings(word_embeddings, pos_one_hots, sent_len, pose, length_pred)
+        motion_annotation_list.append(em)
+        motion_pred_list.append(em_pred)
+
+        temp_R = calculate_R_precision(et.cpu().numpy(), em.cpu().numpy(), top_k=3, sum_all=True)
+        temp_match = euclidean_distance_matrix(et.cpu().numpy(), em.cpu().numpy()).trace()
+        R_precision_real += temp_R
+        matching_score_real += temp_match
+        # print(et_pred.shape, em_pred.shape)
+        temp_R = calculate_R_precision(et_pred.cpu().numpy(), em_pred.cpu().numpy(), top_k=3, sum_all=True)
+        temp_match = euclidean_distance_matrix(et_pred.cpu().numpy(), em_pred.cpu().numpy()).trace()
+        R_precision += temp_R
+        matching_score_pred += temp_match
+
+        nb_sample += bs
+
+    motion_annotation_np = torch.cat(motion_annotation_list, dim=0).cpu().numpy()
+    motion_pred_np = torch.cat(motion_pred_list, dim=0).cpu().numpy()
+    if not force_mask and cal_mm:
+        motion_multimodality = torch.cat(motion_multimodality, dim=0).cpu().numpy()
+        multimodality = calculate_multimodality(motion_multimodality, 10)
+    gt_mu, gt_cov = calculate_activation_statistics(motion_annotation_np)
+    mu, cov = calculate_activation_statistics(motion_pred_np)
+
+    diversity_real = calculate_diversity(motion_annotation_np, 300 if nb_sample > 300 else 100)
+    diversity = calculate_diversity(motion_pred_np, 300 if nb_sample > 300 else 100)
+
+    R_precision_real = R_precision_real / nb_sample
+    R_precision = R_precision / nb_sample
+
+    matching_score_real = matching_score_real / nb_sample
+    matching_score_pred = matching_score_pred / nb_sample
+
+    fid = calculate_frechet_distance(gt_mu, gt_cov, mu, cov)
+
+    msg = f"--> \t Eva. Repeat {repeat_id} :, FID. {fid:.4f}, " \
+          f"Diversity Real. {diversity_real:.4f}, Diversity. {diversity:.4f}, " \
+          f"R_precision_real. {R_precision_real}, R_precision. {R_precision}, " \
+          f"matching_score_real. {matching_score_real:.4f}, matching_score_pred. {matching_score_pred:.4f}," \
+          f"multimodality. {multimodality:.4f}"
+    print(msg)
+    return fid, diversity, R_precision, matching_score_pred, multimodality
+
+
+@torch.no_grad()
+def new_evaluation_mask_transformer_test_plus_res_with_base_len_est(val_loader, vq_model, res_model, trans, length_estimator,
+                                                               repeat_id, eval_wrapper,
+                                                               time_steps, cond_scale, temperature, topkr, gsample=True, force_mask=False,
+                                                               cal_mm=True, res_cond_scale=5):
+    trans.eval()
+    vq_model.eval()
+    res_model.eval()
+    length_estimator.eval()
+
+    motion_annotation_list = []
+    motion_pred_list = []
+    motion_multimodality = []
+    R_precision_real = 0
+    R_precision = 0
+    matching_score_real = 0
+    matching_score_pred = 0
+    multimodality = 0
+
+    nb_sample = 0
+    if force_mask or (not cal_mm):
+        num_mm_batch = 0
+    else:
+        num_mm_batch = 3
+
+    for i, batch in enumerate(val_loader):
+        word_embeddings, pos_one_hots, pos_indices, sen_embeddings, clip_text, sent_len, pose, m_length, token = batch
+        word_embeddings = word_embeddings.float().cuda()
+        pos_indices = pos_indices.long().cuda()
+        pos_one_hots = pos_one_hots.float().cuda()
+        sen_embeddings = sen_embeddings.float().cuda()
+        sent_len = sent_len.int()
+        m_length = m_length.cuda()
+
+        bs, seq = pose.shape[:2]
+        # num_joints = 21 if pose.shape[-1] == 251 else 22
+        ### Length estimation ###
+        with torch.no_grad():
+            pred_dis = length_estimator(word_embeddings, pos_one_hots, sent_len)
+            pred_dis = torch.nn.Softmax(-1)(pred_dis).squeeze()
+            mov_length = torch.multinomial(pred_dis, 1, replacement=True).squeeze(-1)
+
+            for _ in range(2):
+                too_small = mov_length < 10
+                if too_small.any():
+                    resample = torch.multinomial(pred_dis, 1, replacement=True).squeeze(-1)
+                    mov_length = mov_length.clone()
+                    mov_length[too_small] = resample[too_small]
+
+            length_pred = mov_length * 4
+            
+            # if mov_length < 10:
+            #     mov_length = torch.multinomial(pred_dis, 1, replacement=True)
+            # if mov_length < 10:
+            #     mov_length = torch.multinomial(pred_dis, 1, replacement=True)
+
+            # print(length_pred)
+            # print(m_length)
+            
+        # for i in range(mm_batch)
+        if i < num_mm_batch:
+        # (b, seqlen, c)
+            motion_multimodality_batch = []
+            for _ in range(30):
+                mids = trans.generate(clip_text, length_pred // 4, time_steps, cond_scale,
+                                      temperature=temperature, topk_filter_thres=topkr,
+                                      gsample=gsample, force_mask=force_mask,
+                                      sen_emb=sen_embeddings, word_emb=word_embeddings, pos=pos_indices)
+
+                # motion_codes = motion_codes.permute(0, 2, 1)
+                # mids.unsqueeze_(-1)
+                pred_ids = res_model.generate(mids, clip_text, length_pred // 4, temperature=1, cond_scale=res_cond_scale,
+                                              sen_emb=sen_embeddings, word_emb=word_embeddings, pos=pos_indices)
+                # pred_codes = trans(code_indices[..., 0], clip_text, m_length//4, force_mask=force_mask)
+                # pred_ids = torch.where(pred_ids==-1, 0, pred_ids)
+
+                pred_motions = vq_model.forward_decoder(pred_ids)
+
+                # pred_motions = vq_model.decoder(codes)
+                # pred_motions = vq_model.forward_decoder(mids)
+
+                et_pred, em_pred = eval_wrapper.get_co_embeddings(word_embeddings, pos_one_hots, sent_len, pred_motions.clone(),
+                                                                  length_pred)
+                # em_pred = em_pred.unsqueeze(1)  #(bs, 1, d)
+                motion_multimodality_batch.append(em_pred.unsqueeze(1))
+            motion_multimodality_batch = torch.cat(motion_multimodality_batch, dim=1) #(bs, 30, d)
+            motion_multimodality.append(motion_multimodality_batch)
+            
+        else:
+            mids = trans.generate(clip_text, length_pred // 4, time_steps, cond_scale,
+                                  temperature=temperature, topk_filter_thres=topkr,
+                                  force_mask=force_mask,
+                                  sen_emb=sen_embeddings, word_emb=word_embeddings, pos=pos_indices)
+
+            # motion_codes = motion_codes.permute(0, 2, 1)
+            # mids.unsqueeze_(-1)
+            pred_ids = res_model.generate(mids, clip_text, length_pred // 4, temperature=1, cond_scale=res_cond_scale,
+                                          sen_emb=sen_embeddings, word_emb=word_embeddings, pos=pos_indices)
+            # pred_codes = trans(code_indices[..., 0], clip_text, m_length//4, force_mask=force_mask)
+            # pred_ids = torch.where(pred_ids == -1, 0, pred_ids)
+
+            pred_motions = vq_model.forward_decoder(pred_ids)
+            # pred_motions = vq_model.forward_decoder(mids)
+
+            et_pred, em_pred = eval_wrapper.get_co_embeddings(word_embeddings, pos_one_hots, sent_len,
+                                                              pred_motions.clone(),
+                                                              length_pred)
+
+        pose = pose.cuda().float()
+
+        et, em = eval_wrapper.get_co_embeddings(word_embeddings, pos_one_hots, sent_len, pose, length_pred)
+        motion_annotation_list.append(em)
+        motion_pred_list.append(em_pred)
+
+        temp_R = calculate_R_precision(et.cpu().numpy(), em.cpu().numpy(), top_k=3, sum_all=True)
+        temp_match = euclidean_distance_matrix(et.cpu().numpy(), em.cpu().numpy()).trace()
+        R_precision_real += temp_R
+        matching_score_real += temp_match
+        # print(et_pred.shape, em_pred.shape)
+        temp_R = calculate_R_precision(et_pred.cpu().numpy(), em_pred.cpu().numpy(), top_k=3, sum_all=True)
+        temp_match = euclidean_distance_matrix(et_pred.cpu().numpy(), em_pred.cpu().numpy()).trace()
+        R_precision += temp_R
+        matching_score_pred += temp_match
+
+        nb_sample += bs
+
+    motion_annotation_np = torch.cat(motion_annotation_list, dim=0).cpu().numpy()
+    motion_pred_np = torch.cat(motion_pred_list, dim=0).cpu().numpy()
+    if not force_mask and cal_mm:
+        motion_multimodality = torch.cat(motion_multimodality, dim=0).cpu().numpy()
+        multimodality = calculate_multimodality(motion_multimodality, 10)
+    gt_mu, gt_cov = calculate_activation_statistics(motion_annotation_np)
+    mu, cov = calculate_activation_statistics(motion_pred_np)
+
+    diversity_real = calculate_diversity(motion_annotation_np, 300 if nb_sample > 300 else 100)
+    diversity = calculate_diversity(motion_pred_np, 300 if nb_sample > 300 else 100)
+
+    R_precision_real = R_precision_real / nb_sample
+    R_precision = R_precision / nb_sample
+
+    matching_score_real = matching_score_real / nb_sample
+    matching_score_pred = matching_score_pred / nb_sample
+
+    fid = calculate_frechet_distance(gt_mu, gt_cov, mu, cov)
+
+    msg = f"--> \t Eva. Repeat {repeat_id} :, FID. {fid:.4f}, " \
+          f"Diversity Real. {diversity_real:.4f}, Diversity. {diversity:.4f}, " \
+          f"R_precision_real. {R_precision_real}, R_precision. {R_precision}, " \
+          f"matching_score_real. {matching_score_real:.4f}, matching_score_pred. {matching_score_pred:.4f}," \
+          f"multimodality. {multimodality:.4f}"
+    print(msg)
+    return fid, diversity, R_precision, matching_score_pred, multimodality
+
